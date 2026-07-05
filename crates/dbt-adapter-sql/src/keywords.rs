@@ -6,7 +6,7 @@ pub fn reserved_keywords(backend: AdapterType) -> &'static [&'static str] {
     use dbt_sql_keywords::*;
     match backend {
         Snowflake => snowflake::RESERVED_KEYWORDS,
-        Bigquery => bigquery::RESERVED_KEYWORDS,
+        Bigquery | Spanner => bigquery::RESERVED_KEYWORDS,
         Databricks => databricks::RESERVED_KEYWORDS,
         Redshift => redshift::RESERVED_KEYWORDS,
         DuckDB => duckdb::RESERVED_KEYWORDS,
@@ -22,7 +22,7 @@ pub fn strict_non_reserved_keywords(backend: AdapterType) -> &'static [&'static 
     use dbt_sql_keywords::*;
     match backend {
         Snowflake => snowflake::STRICT_NON_RESERVED_KEYWORDS,
-        Bigquery => bigquery::STRICT_NON_RESERVED_KEYWORDS,
+        Bigquery | Spanner => bigquery::STRICT_NON_RESERVED_KEYWORDS,
         Databricks => databricks::STRICT_NON_RESERVED_KEYWORDS,
         Redshift => redshift::STRICT_NON_RESERVED_KEYWORDS,
         DuckDB => duckdb::STRICT_NON_RESERVED_KEYWORDS,
@@ -39,7 +39,7 @@ pub fn non_reserved_keywords(backend: AdapterType) -> &'static [&'static str] {
     use dbt_sql_keywords::*;
     match backend {
         Snowflake => snowflake::NON_RESERVED_KEYWORDS,
-        Bigquery => bigquery::NON_RESERVED_KEYWORDS,
+        Bigquery | Spanner => bigquery::NON_RESERVED_KEYWORDS,
         Databricks => databricks::NON_RESERVED_KEYWORDS,
         Redshift => redshift::NON_RESERVED_KEYWORDS,
         DuckDB => duckdb::NON_RESERVED_KEYWORDS,

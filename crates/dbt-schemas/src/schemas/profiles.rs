@@ -41,6 +41,7 @@ pub enum DbConfig {
     Snowflake(Box<SnowflakeDbConfig>),
     Postgres(Box<PostgresDbConfig>),
     Bigquery(Box<BigqueryDbConfig>),
+    Spanner(Box<SpannerDbConfig>),
     Trino(Box<TrinoDbConfig>),
     Datafusion(Box<DatafusionDbConfig>),
     // SqlServer,
@@ -99,6 +100,7 @@ impl_from_db_config!(Redshift, RedshiftDbConfig);
 impl_from_db_config!(Snowflake, SnowflakeDbConfig);
 impl_from_db_config!(Postgres, PostgresDbConfig);
 impl_from_db_config!(Bigquery, BigqueryDbConfig);
+impl_from_db_config!(Spanner, SpannerDbConfig);
 impl_from_db_config!(Trino, TrinoDbConfig);
 impl_from_db_config!(Datafusion, DatafusionDbConfig);
 impl_from_db_config!(Databricks, DatabricksDbConfig);
@@ -113,6 +115,7 @@ impl DbConfig {
             DbConfig::Snowflake(config) => config.account.as_deref(),
             DbConfig::Postgres(config) => config.host.as_deref(),
             DbConfig::Bigquery(config) => config.database.as_deref(),
+            DbConfig::Spanner(config) => config.project.as_deref(),
             DbConfig::Trino(config) => config.host.as_deref(),
             DbConfig::Datafusion(config) => config.database.as_deref(),
             DbConfig::Redshift(config) => config.host.as_deref(),
@@ -201,6 +204,15 @@ impl DbConfig {
                 "gcs_bucket",
                 "submission_method",
                 "dataproc_batch",
+            ],
+            DbConfig::Spanner(_) => &[
+                "project",
+                "instance",
+                "database",
+                "schema",
+                "api_endpoint",
+                "emulator",
+                "retries",
             ],
             DbConfig::Redshift(_) => &[
                 "host",
@@ -334,6 +346,7 @@ impl DbConfig {
             DbConfig::Snowflake(config) => dbt_yaml::to_value(config),
             DbConfig::Postgres(config) => dbt_yaml::to_value(config),
             DbConfig::Bigquery(config) => dbt_yaml::to_value(config),
+            DbConfig::Spanner(config) => dbt_yaml::to_value(config),
             DbConfig::Trino(config) => dbt_yaml::to_value(config),
             DbConfig::Datafusion(config) => dbt_yaml::to_value(config),
             DbConfig::Redshift(config) => dbt_yaml::to_value(config),
@@ -354,6 +367,7 @@ impl DbConfig {
             DbConfig::Snowflake(..) => AdapterType::Snowflake,
             DbConfig::Postgres(..) => AdapterType::Postgres,
             DbConfig::Bigquery(..) => AdapterType::Bigquery,
+            DbConfig::Spanner(..) => AdapterType::Spanner,
             DbConfig::Trino(..) => AdapterType::Trino,
             DbConfig::Datafusion(..) => AdapterType::Datafusion,
             DbConfig::Databricks(..) => AdapterType::Databricks,
@@ -373,6 +387,7 @@ impl DbConfig {
             DbConfig::Snowflake(config) => config.database.as_ref(),
             DbConfig::Postgres(config) => config.database.as_ref().or(config.database.as_ref()),
             DbConfig::Bigquery(config) => config.database.as_ref(),
+            DbConfig::Spanner(config) => config.database.as_ref(),
             DbConfig::Trino(config) => config.database.as_ref(),
             DbConfig::Datafusion(config) => config.database.as_ref(),
             DbConfig::Databricks(config) => config.database.as_ref(),
@@ -414,6 +429,7 @@ impl DbConfig {
             DbConfig::Postgres(config) => config.schema.as_ref(),
             DbConfig::Trino(config) => config.schema.as_ref(),
             DbConfig::Bigquery(config) => config.schema.as_ref(),
+            DbConfig::Spanner(config) => config.schema.as_ref(),
             DbConfig::Datafusion(config) => config.schema.as_ref(),
             DbConfig::Databricks(config) => config.schema.as_ref(),
             DbConfig::Spark(config) => config.schema.as_ref(),
@@ -431,6 +447,7 @@ impl DbConfig {
             DbConfig::Snowflake(config) => config.threads.as_ref(),
             DbConfig::Databricks(config) => config.threads.as_ref(),
             DbConfig::Bigquery(config) => config.threads.as_ref(),
+            DbConfig::Spanner(config) => config.threads.as_ref(),
             DbConfig::Redshift(config) => config.threads.as_ref(),
             DbConfig::Postgres(config) => config.threads.as_ref(),
             DbConfig::Trino(config) => config.threads.as_ref(),
@@ -451,6 +468,7 @@ impl DbConfig {
             DbConfig::Databricks(config) => config.threads = threads,
             DbConfig::Postgres(config) => config.threads = threads,
             DbConfig::Bigquery(config) => config.threads = threads,
+            DbConfig::Spanner(config) => config.threads = threads,
             DbConfig::Trino(config) => config.threads = threads,
             DbConfig::Redshift(config) => config.threads = threads,
             DbConfig::DuckDB(config) => config.threads = threads,
@@ -834,6 +852,65 @@ pub struct BigqueryDbConfig {
     pub service_account_impersonation_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_endpoint: Option<YmlValue>,
+}
+
+/// Google Cloud Spanner (GoogleSQL dialect) connection configuration.
+///
+/// Spanner addresses a database by `project` -> `instance` -> `database`, then a
+/// (usually default/empty) named `schema`. Authentication reuses the Google Cloud
+/// auth families (OAuth / service account), mirroring BigQuery.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DbtSchema, Merge)]
+#[merge(strategy = merge_strategies_extend::overwrite_option)]
+#[serde(rename_all = "snake_case")]
+pub struct SpannerDbConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<StringOrInteger>,
+    /// GCP project id that owns the Spanner instance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// Spanner instance id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
+    /// Spanner database id (maps to dbt's `database`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    /// Named schema within the database (defaults to the unnamed/empty schema).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    /// Authentication method (e.g. `oauth`, `service-account`, `service-account-json`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keyfile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keyfile_json: Option<StringOrMap>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub impersonate_service_account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_project: Option<String>,
+    /// Optional Spanner API endpoint override (e.g. for the emulator).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_endpoint: Option<String>,
+    /// Connect with anonymous credentials against a Spanner emulator.
+    /// The driver also auto-detects this from the `SPANNER_EMULATOR_HOST` env var.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emulator: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retries: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DbtSchema, Merge)]
@@ -1474,6 +1551,7 @@ pub enum TargetContext {
     Datafusion(DatafusionTargetEnv),
     Postgres(PostgresTargetEnv),
     Bigquery(BigqueryTargetEnv),
+    Spanner(SpannerTargetEnv),
     Databricks(DatabricksTargetEnv),
     Redshift(RedshiftTargetEnv),
     Salesforce(SalesforceTargetEnv),
@@ -1562,6 +1640,20 @@ pub struct BigqueryTargetEnv {
     pub target_name: Option<String>,
     pub timeout_seconds: Option<i64>,
     pub token_uri: Option<String>,
+    pub __common__: CommonTargetContext,
+}
+
+#[derive(Serialize, DbtSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct SpannerTargetEnv {
+    pub project: String,
+    pub instance: Option<String>,
+    pub method: Option<String>,
+    pub impersonate_service_account: Option<String>,
+    pub quota_project: Option<String>,
+    pub api_endpoint: Option<String>,
+    pub retries: Option<i64>,
+    pub target_name: Option<String>,
     pub __common__: CommonTargetContext,
 }
 
@@ -1918,6 +2010,29 @@ impl TryFrom<DbConfig> for TargetContext {
                     target_name: config.target_name.clone(),
                     timeout_seconds: config.timeout_seconds,
                     token_uri: config.token_uri,
+                }))
+            }
+
+            DbConfig::Spanner(config) => {
+                let project = config.project.clone().ok_or_else(|| missing("project"))?;
+                let database = config.database.ok_or_else(|| missing("database"))?;
+                // Spanner's default schema is the unnamed/empty schema.
+                let schema = config.schema.unwrap_or_default();
+                Ok(TargetContext::Spanner(SpannerTargetEnv {
+                    project,
+                    instance: config.instance.clone(),
+                    method: config.method.clone(),
+                    impersonate_service_account: config.impersonate_service_account.clone(),
+                    quota_project: config.quota_project.clone(),
+                    api_endpoint: config.api_endpoint.clone(),
+                    retries: config.retries,
+                    target_name: config.target_name.clone(),
+                    __common__: CommonTargetContext {
+                        database,
+                        schema,
+                        type_: adapter_type,
+                        threads: None,
+                    },
                 }))
             }
 

@@ -49,6 +49,8 @@ pub enum AdapterType {
     Snowflake,
     /// Bigquery
     Bigquery,
+    /// Spanner (Google Cloud Spanner, GoogleSQL dialect)
+    Spanner,
     /// Databricks
     Databricks,
     /// Redshift
@@ -106,6 +108,9 @@ pub fn quote_char(adapter_type: AdapterType) -> char {
         Snowflake => '"',
         // https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/lexical#quoted_identifiers
         Bigquery => '`',
+        // Spanner GoogleSQL uses backtick-quoted identifiers, like BigQuery.
+        // https://cloud.google.com/spanner/docs/reference/standard-sql/lexical#identifiers
+        Spanner => '`',
         Databricks | Spark => '`',
         Redshift => '"',
         Postgres | Salesforce => '"',
@@ -160,6 +165,7 @@ mod tests {
             ("pOstgresql", AdapterType::Postgres),
             ("sNowflake", AdapterType::Snowflake),
             ("bIgquery", AdapterType::Bigquery),
+            ("sPanner", AdapterType::Spanner),
             ("dAtabricks", AdapterType::Databricks),
             ("rEdshift", AdapterType::Redshift),
             ("sAlesforce", AdapterType::Salesforce),
@@ -203,6 +209,7 @@ mod tests {
             vec![
                 (AdapterType::Snowflake, "snowflake"),
                 (AdapterType::Bigquery, "bigquery"),
+                (AdapterType::Spanner, "spanner"),
                 (AdapterType::Databricks, "databricks"),
                 (AdapterType::Redshift, "redshift"),
                 (AdapterType::Spark, "spark"),
@@ -227,6 +234,7 @@ mod tests {
     fn test_quote_char_by_adapter() {
         for adapter_type in [
             AdapterType::Bigquery,
+            AdapterType::Spanner,
             AdapterType::Databricks,
             AdapterType::Spark,
         ] {

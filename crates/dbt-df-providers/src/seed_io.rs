@@ -228,6 +228,7 @@ pub fn infer_seed_column_name_strategy(
         (
             false,
             AdapterType::Bigquery
+            | AdapterType::Spanner
             | AdapterType::Databricks
             | AdapterType::Spark
             | AdapterType::Fabric,

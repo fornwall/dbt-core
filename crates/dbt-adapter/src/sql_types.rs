@@ -519,7 +519,7 @@ pub fn make_arrow_field_v2(
 
 pub const fn get_field_sql_type_metadata_key(adapter_type: AdapterType) -> &'static str {
     match adapter_type {
-        AdapterType::Bigquery => BIGQUERY_METADATA_SQL_TYPE_KEY,
+        AdapterType::Bigquery | AdapterType::Spanner => BIGQUERY_METADATA_SQL_TYPE_KEY,
         AdapterType::Redshift => REDSHIFT_METADATA_SQL_TYPE_KEY,
         AdapterType::Snowflake => SNOWFLAKE_METADATA_SQL_TYPE_KEY,
         AdapterType::Databricks => todo!(),
@@ -553,7 +553,7 @@ pub fn original_type_string<'a>(
 
     match (adapter_type, sql_type_string) {
         (_, s @ Some(_)) => s,
-        (AdapterType::Bigquery, None) => {
+        (AdapterType::Bigquery | AdapterType::Spanner, None) => {
             // this can build a SQL type from the "Type" metadata key
             bigquery::field_to_string(field)
         }
@@ -578,7 +578,7 @@ impl SdfSchemaBuilder {
         use AdapterType::*;
         let metadata = field.metadata();
         let comment = match self.adapter_type {
-            Bigquery => metadata.get("Description"),
+            Bigquery | Spanner => metadata.get("Description"),
             Redshift | Databricks | Spark | DuckDB | Fdcs => {
                 metadata.get(ARROW_FIELD_COMMENT_METADATA_KEY)
             }
@@ -596,7 +596,7 @@ impl SdfSchemaBuilder {
         let nullable = field.is_nullable();
         let comment = self.field_comment(field);
         let original_type_text = match self.adapter_type {
-            AdapterType::Bigquery => bigquery::field_to_string(field),
+            AdapterType::Bigquery | AdapterType::Spanner => bigquery::field_to_string(field),
             _ => original_type_string(self.adapter_type, field),
         };
         // XXX: We should probably error here rather than approximate
@@ -620,8 +620,8 @@ impl SdfSchemaBuilder {
     pub fn build_sdf_schema(self, type_ops: &dyn TypeOps) -> AdapterResult<SdfSchema> {
         use AdapterType::*;
         match self.adapter_type {
-            Bigquery | Redshift | Databricks | Spark | DuckDB | Fdcs | Fabric | ClickHouse
-            | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => {
+            Bigquery | Spanner | Redshift | Databricks | Spark | DuckDB | Fdcs | Fabric
+            | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => {
                 let original_fields = self.original.fields();
                 let mut sdf_fields = Vec::with_capacity(original_fields.len());
                 for field in original_fields {
@@ -944,8 +944,9 @@ pub const fn max_varchar_size(adapter_type: AdapterType) -> Option<usize> {
         // FIXME: Actual MAX is 134_217_728 - 16_777_216 is the default value
         Snowflake => Some(16_777_216),
         Redshift => Some(256),
-        Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | Fdcs | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
+        Postgres | Bigquery | Spanner | Databricks | Salesforce | Spark | DuckDB | Fdcs
+        | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle
+        | Datafusion => None,
     }
 }
 
@@ -955,8 +956,9 @@ pub const fn max_varbinary_size(adapter_type: AdapterType) -> Option<usize> {
         Snowflake => Some(16_777_216),
         Redshift => Some(65_535),
         // TODO: define limits for more systems
-        Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | Fdcs | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
+        Postgres | Bigquery | Spanner | Databricks | Salesforce | Spark | DuckDB | Fdcs
+        | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle
+        | Datafusion => None,
     }
 }
 

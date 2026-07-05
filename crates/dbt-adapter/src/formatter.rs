@@ -39,7 +39,7 @@ impl SqlLiteralFormatter {
 
     pub fn format_str(&self, l: &str) -> String {
         match self.adapter_type {
-            AdapterType::Bigquery | AdapterType::Databricks => {
+            AdapterType::Bigquery | AdapterType::Spanner | AdapterType::Databricks => {
                 // BigQuery and Databricks uses \ for string escapes
                 // https://docs.databricks.com/aws/en/sql/language-manual/data-types/string-type
                 let escaped_str = l.replace("'", "\\'");
@@ -82,7 +82,9 @@ impl SqlLiteralFormatter {
     /// and caps at microseconds, so we truncate to 6 digits to avoid a runtime parse error.
     pub fn format_timestamp(&self, ts: DateTime<Utc>) -> String {
         match self.adapter_type {
-            AdapterType::Bigquery => ts.to_rfc3339_opts(SecondsFormat::Micros, true),
+            AdapterType::Bigquery | AdapterType::Spanner => {
+                ts.to_rfc3339_opts(SecondsFormat::Micros, true)
+            }
             _ => ts.to_rfc3339(),
         }
     }

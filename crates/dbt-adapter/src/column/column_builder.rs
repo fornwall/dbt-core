@@ -24,7 +24,7 @@ impl ColumnBuilder {
         use AdapterType::*;
         match self.adapter_type {
             Snowflake => Ok(Self::build_snowflake(field, type_ops)),
-            Bigquery => Ok(Self::build_bigquery(field, type_ops)),
+            Bigquery | Spanner => Ok(Self::build_bigquery(field, type_ops)),
             Databricks | Spark => Ok(Self::build_databricks(field, type_ops)),
             Redshift => Ok(Self::build_redshift(field, type_ops)),
             Postgres | Salesforce | DuckDB | Fdcs => Ok(Self::build_postgres_like(field, type_ops)),
@@ -84,7 +84,7 @@ impl ColumnBuilder {
                 numeric_scale,
             ),
             // TODO: BigQuery fields
-            Bigquery => Column::new_bigquery(name, dtype, &[], mode.unwrap_or_default()),
+            Bigquery | Spanner => Column::new_bigquery(name, dtype, &[], mode.unwrap_or_default()),
             Redshift => Column::new(
                 Redshift,
                 name,

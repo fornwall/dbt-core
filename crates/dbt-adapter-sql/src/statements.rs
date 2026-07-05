@@ -12,6 +12,18 @@ pub fn is_update_statement(sql: &str, adapter_type: AdapterType) -> bool {
                 Some(Token::Word(token)) if !is_clickhouse_read_statement_token(token)
             )
         }
+        AdapterType::Spanner => {
+            // Spanner's ADBC driver requires DML (INSERT/UPDATE/DELETE) to run
+            // through execute_update (a read/write transaction); a single-use read
+            // transaction rejects DML. DDL (CREATE/DROP/ALTER) is routed to the
+            // admin API by the driver regardless of path, so only DML is flagged.
+            let sql = trim_leading_sql_comments(sql);
+            let mut tokenizer = Tokenizer::new(sql);
+            matches!(
+                tokenizer.next(),
+                Some(Token::Word(token)) if is_spanner_dml_token(token)
+            )
+        }
         AdapterType::Bigquery
         | AdapterType::Snowflake
         | AdapterType::Databricks
@@ -55,6 +67,12 @@ fn trim_leading_sql_comments(mut sql: &str) -> &str {
         }
         return trimmed;
     }
+}
+
+fn is_spanner_dml_token(token: &str) -> bool {
+    token.eq_ignore_ascii_case("INSERT")
+        || token.eq_ignore_ascii_case("UPDATE")
+        || token.eq_ignore_ascii_case("DELETE")
 }
 
 fn is_clickhouse_read_statement_token(token: &str) -> bool {

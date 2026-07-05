@@ -49,6 +49,9 @@ pub fn get_relation(
         AdapterType::Bigquery => bigquery_get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
+        AdapterType::Spanner => {
+            spanner_get_relation(adapter, state, ctx, conn, database, schema, identifier, token)
+        }
         AdapterType::Databricks => databricks_get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
@@ -212,6 +215,57 @@ fn snowflake_get_relation(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Spanner reuses GoogleSQL but, unlike BigQuery, connects to a single database
+/// and does not qualify INFORMATION_SCHEMA with a `<db>.<schema>` prefix. The
+/// schema is a named schema (the default is the unnamed/empty schema `''`).
+#[allow(clippy::too_many_arguments)]
+fn spanner_get_relation(
+    adapter: &AdapterImpl,
+    state: &State,
+    ctx: &QueryCtx,
+    conn: &'_ mut dyn Connection,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    token: CancellationToken,
+) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
+    // Values are compared as string literals against INFORMATION_SCHEMA columns,
+    // so use the raw (unquoted) schema/identifier.
+    let sql = format!(
+        "SELECT table_catalog,
+                    table_schema,
+                    table_name,
+                    table_type
+                FROM INFORMATION_SCHEMA.TABLES
+                WHERE table_schema = '{schema}' AND table_name = '{identifier}';",
+    );
+
+    let batch = adapter
+        .engine()
+        .execute(Some(state), conn, ctx, &sql, token.clone())?;
+
+    if batch.num_rows() == 0 {
+        return Ok(None);
+    }
+
+    let column = batch.column_by_name("table_type").unwrap();
+    let string_array = column.as_any().downcast_ref::<StringArray>().unwrap();
+    let relation_type_name = string_array.value(0).to_uppercase();
+    let relation_type = RelationType::from_adapter_type(AdapterType::Spanner, &relation_type_name);
+
+    let relation = Box::new(
+        Relation::new(
+            AdapterType::Spanner,
+            database.to_string(),
+            schema.to_string(),
+            identifier.to_string(),
+        )
+        .with_relation_type(relation_type)
+        .with_quoting(adapter.quoting()),
+    );
+    Ok(Some(relation))
+}
+
 fn bigquery_get_relation(
     adapter: &AdapterImpl,
     state: &State,

@@ -1,0 +1,12 @@
+spanner_test:
+  target: dev
+  outputs:
+    dev:
+      type: spanner
+      project: test-project
+      instance: test-instance
+      database: test-db
+      schema: ""
+      emulator: true
+      api_endpoint: http://localhost:9010
+      threads: 1
