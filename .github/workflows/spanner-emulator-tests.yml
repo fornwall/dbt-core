@@ -47,6 +47,28 @@ jobs:
       - name: Install the pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
+      # The workspace build (dbt-state's build script) needs protoc; the runner
+      # image does not ship it. Mirrors the install step in release-v2.yml.
+      - name: Install Protocol Buffer Compiler
+        run: |
+          if command -v protoc &> /dev/null; then
+            echo "protoc already installed: $(protoc --version)"
+            exit 0
+          fi
+          PB_VERSION="29.4"
+          case "$(uname -m)" in
+            x86_64) PB_ARCH="x86_64" ;;
+            aarch64|arm64) PB_ARCH="aarch_64" ;;
+            *) echo "::error::Unsupported arch: $(uname -m)"; exit 1 ;;
+          esac
+          PB_URL="https://github.com/protocolbuffers/protobuf/releases/download/v$PB_VERSION/protoc-$PB_VERSION-linux-$PB_ARCH.zip"
+          curl -LsSf "$PB_URL" -o /tmp/protoc.zip
+          rm -rf /tmp/protoc
+          unzip -o /tmp/protoc.zip -d /tmp/protoc
+          echo "/tmp/protoc/bin" >> "$GITHUB_PATH"
+          /tmp/protoc/bin/protoc --version
+          rm /tmp/protoc.zip
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
