@@ -90,11 +90,104 @@ fn run_dbt_against_emulator() -> Result<(), String> {
     let out = run_dbt(&["run"], &project_dir)?;
     assert_dbt_succeeded(&out, "initial run")?;
 
-    // Second run of the incremental model exercises the delete+insert path.
+    // The table materializes the two upstream rows, and the incremental model is
+    // seeded from it (also two rows) on its first, non-incremental run.
+    let session = create_session()?;
+    assert_count(
+        &session,
+        "SELECT COUNT(*) AS n FROM spanner_table",
+        2,
+        "table after initial run",
+    )?;
+    assert_count(
+        &session,
+        "SELECT COUNT(*) AS n FROM spanner_incremental",
+        2,
+        "incremental after initial run",
+    )?;
+
+    // Second run of the incremental model exercises the delete+insert path: the
+    // delta re-emits id=1 with a new value and adds id=3 (see the fixture model).
     let out = run_dbt(&["run", "--select", "spanner_incremental"], &project_dir)?;
     assert_dbt_succeeded(&out, "incremental delete+insert run")?;
 
+    // Assert delete+insert semantics on a fresh session (strong read of the
+    // committed state):
+    //   - id=1 is deleted and re-inserted with its new value (not duplicated),
+    //   - id=3 is appended,
+    //   - id=2 is left untouched.
+    // A correct delete+insert yields exactly 3 rows. A plain append of the two
+    // delta rows would instead duplicate id=1's primary key (a hard error on
+    // Spanner) or, if it somehow didn't, leave 4 rows — either way not 3.
+    let session = create_session()?;
+    assert_count(
+        &session,
+        "SELECT COUNT(*) AS n FROM spanner_incremental",
+        3,
+        "incremental after delete+insert",
+    )?;
+    assert_scalar(
+        &session,
+        "SELECT val FROM spanner_incremental WHERE id = 1",
+        "HELLO_UPDATED",
+        "overlapping key replaced by delete+insert",
+    )?;
+    assert_scalar(
+        &session,
+        "SELECT val FROM spanner_incremental WHERE id = 2",
+        "world",
+        "non-matching row left untouched",
+    )?;
+
     let _ = std::fs::remove_dir_all(&project_dir);
+    Ok(())
+}
+
+/// Create a Spanner session against the emulator's REST data API (served on the
+/// same REST endpoint as the admin API). Returns the fully-qualified session name.
+fn create_session() -> Result<String, String> {
+    let url = format!(
+        "{REST_ADMIN}/v1/projects/{PROJECT}/instances/{INSTANCE}/databases/{DATABASE}/sessions"
+    );
+    let body = curl_post_capture(&url, "{}")?;
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("parsing session response failed: {e}\n{body}"))?;
+    v["name"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("no session name in response: {body}"))
+}
+
+/// Run `sql` via `sessions.executeSql` and return the first column of the first
+/// row as a string (Spanner encodes INT64 as a decimal string in JSON).
+fn query_scalar(session: &str, sql: &str) -> Result<String, String> {
+    let url = format!("{REST_ADMIN}/v1/{session}:executeSql");
+    let body = serde_json::json!({ "sql": sql }).to_string();
+    let resp = curl_post_capture(&url, &body)?;
+    let v: serde_json::Value = serde_json::from_str(&resp)
+        .map_err(|e| format!("parsing executeSql response failed: {e}\n{resp}"))?;
+    v["rows"][0][0]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("no scalar value in executeSql response for `{sql}`: {resp}"))
+}
+
+fn assert_count(session: &str, sql: &str, expected: i64, what: &str) -> Result<(), String> {
+    let raw = query_scalar(session, sql)?;
+    let got: i64 = raw
+        .parse()
+        .map_err(|e| format!("{what}: could not parse count `{raw}`: {e}"))?;
+    if got != expected {
+        return Err(format!("{what}: expected {expected} rows, got {got}"));
+    }
+    Ok(())
+}
+
+fn assert_scalar(session: &str, sql: &str, expected: &str, what: &str) -> Result<(), String> {
+    let got = query_scalar(session, sql)?;
+    if got != expected {
+        return Err(format!("{what}: expected `{expected}`, got `{got}`"));
+    }
     Ok(())
 }
 
@@ -148,6 +241,11 @@ fn create_instance_and_database() -> Result<(), String> {
 }
 
 fn curl_post(url: &str, body: &str) -> Result<(), String> {
+    curl_post_capture(url, body).map(|_| ())
+}
+
+/// POST `body` as JSON to `url` and return the response body on success.
+fn curl_post_capture(url: &str, body: &str) -> Result<String, String> {
     let output = Command::new("curl")
         .args([
             "-sS",
@@ -167,7 +265,7 @@ fn curl_post(url: &str, body: &str) -> Result<(), String> {
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn run_dbt(args: &[&str], project_dir: &Path) -> Result<String, String> {

@@ -28,6 +28,8 @@ dbt-test-containers = { workspace = true }
 dbt-test-primitives = { workspace = true }
 dbt-test-utils = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+# Parsing the Spanner emulator's REST executeSql responses in the Spanner E2E test.
+serde_json = { workspace = true }
 
 [[bin]]
 doctest = false
