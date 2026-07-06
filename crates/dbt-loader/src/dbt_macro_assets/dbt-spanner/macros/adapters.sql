@@ -12,7 +12,7 @@
   IMPORTANT dialect notes (see individual macros for detail):
     - No CREATE TABLE AS SELECT (CTAS). Tables need an explicit schema + PRIMARY KEY,
       and DDL cannot be mixed with DML. The `table` materialization and
-      `spanner__create_table_as` live in materializations/table.sql (DRAFT).
+      `spanner__create_table_as` live in materializations/table.sql.
       Set `primary_key` in the model config for table models.
     - Views must be created with `SQL SECURITY INVOKER`.
     - No MERGE and no TRUNCATE statements.

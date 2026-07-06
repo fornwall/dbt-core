@@ -1,6 +1,6 @@
 {#
-  Spanner incremental materialization (DRAFT — untested; needs the Spanner ADBC
-  driver to validate transaction/DDL semantics).
+  Spanner incremental materialization. Verified end-to-end against the Spanner
+  emulator with the adbc-spanner driver (append + delete_insert paths).
 
   Spanner has no MERGE, so the only upsert strategy is delete+insert. It also has
   no temp tables and no CTAS (see materializations/table.sql). Two source modes

@@ -1,6 +1,6 @@
 {#
-  Spanner table materialization (DRAFT — untested; needs the Spanner ADBC driver
-  to validate transaction/DDL semantics).
+  Spanner table materialization. Verified end-to-end against the Spanner emulator
+  with the adbc-spanner driver.
 
   Spanner's GoogleSQL differs from BigQuery in ways that make the standard dbt
   table flow unusable:
@@ -22,7 +22,7 @@
   The primary key is taken from the model `primary_key` config, e.g.:
       {{ config(materialized='table', primary_key=['id']) }}
 
-  TODO(spanner): items to resolve once the driver is available —
+  Known limitations / open items:
     * Not fully atomic: Spanner DDL is not transactional, so the two renames in
       steps 3-4 are separate async `UpdateDatabaseDdl` operations. There is a
       brief window after step 3 and before step 4 where <target> does not exist.
@@ -32,8 +32,8 @@
       an orphan <intermediate>, which the next run cleans up. This is the main
       win over the drop-then-create approach.
     * Transaction boundaries: the CREATE runs with auto_begin=False so it executes
-      as autocommit DDL (Spanner rejects DDL inside a read-write transaction). This
-      assumes the driver treats auto_begin=False as autocommit for DDL — unverified.
+      as autocommit DDL (Spanner rejects DDL inside a read-write transaction). The
+      driver treats auto_begin=False as autocommit for DDL, as verified end-to-end.
     * Column types: `get_column_schema_from_query` may yield bare `STRING`/`BYTES`;
       Spanner DDL requires a length (e.g. `STRING(MAX)`). Sizing may be needed.
     * Contract path: column ordering for the INSERT column list vs the SELECT.

@@ -8,8 +8,10 @@ arms across `dbt-adapter`, `dbt-adapter-sql`, `dbt-schemas`, `dbt-adbc`, and thi
 crate. Read it before touching any of them. The user-facing version is
 `docs/adapters/spanner.md`.
 
-Spanner is **experimental** and the ADBC driver is not yet wired up, so nothing
-here is validated end-to-end — reason about semantics, don't assume.
+Spanner is **experimental**, but the ADBC driver is now integrated and the
+adapter runs end-to-end against the Spanner emulator (view, table, and
+incremental including the delete+insert path). See **Driver status** below for
+the tested runtime facts before changing transaction/DDL behavior.
 
 ## Guiding principle
 
@@ -39,9 +41,9 @@ adapter exists as its own thing rather than an alias.
   `statement(..., auto_begin=False)` (autocommit — Spanner rejects DDL in a
   transaction); **DML** statements use the default `auto_begin=True` and share the
   one transaction that the trailing `adapter.commit()` closes. The delete+insert
-  upsert is emitted as a single `statement('main')` block so it commits/rolls back
-  atomically. Both behaviors assume the driver honors `auto_begin` accordingly —
-  unverified until the driver exists.
+  upsert is emitted as a single `statement('main')` block (a `;`-separated
+  `DELETE; INSERT`) that the driver runs atomically via `ExecuteBatchDml`. The
+  driver honors `auto_begin` accordingly; this is verified against the emulator.
 - **No `MERGE`.** Incremental models support only `append` and `delete_insert`
   (custom `materialization incremental, adapter='spanner'` in
   `dbt-spanner/macros/materializations/incremental.sql`). `delete_insert` uses a
@@ -62,7 +64,8 @@ adapter exists as its own thing rather than an alias.
   renamed (drop + recreate).
 - **Named schemas** are a newer, differently-shaped feature. The default schema
   is the unnamed/empty schema `''`. `create_schema`/`drop_schema` DDL here is
-  minimal and unverified.
+  deliberately minimal; the end-to-end fixture exercises only the default
+  unnamed schema, so named-schema DDL has not been run against a live database.
 - **No partition/cluster** in the BigQuery sense — do not port `partition_by` /
   `cluster_by` / options macros. (Interleaving is a different concept; don't
   attempt it.)
@@ -126,8 +129,10 @@ Runtime facts that shaped the code (don't regress these):
   a single-use read txn that rejects DML. `is_update_statement`
   (`dbt-adapter-sql/statements.rs`) flags Spanner DML so `adapter_engine.rs` calls
   `execute_update`. DDL is auto-routed to `UpdateDatabaseDdl` on either path.
-- The driver runs **one DML statement per execute_update** — never emit a
-  `;`-joined `DELETE; INSERT` block; issue separate `statement()` calls.
+- The driver runs a **`;`-separated DML batch atomically via `ExecuteBatchDml`**
+  in one `execute_update` transaction (driver >= 0.2.0), which is how the
+  incremental `delete_insert` upsert emits `DELETE; INSERT` as a single
+  `statement('main')`. DDL, by contrast, must not be batched with DML.
 - Spanner DDL needs **`STRING(MAX)`/`BYTES(MAX)`** (not bare STRING/BYTES), **no
   `CASCADE`** on DROP, and **cannot rename views** (the view materialization uses
   `CREATE OR REPLACE VIEW` directly).
