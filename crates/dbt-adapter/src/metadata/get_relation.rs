@@ -49,9 +49,9 @@ pub fn get_relation(
         AdapterType::Bigquery => bigquery_get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
-        AdapterType::Spanner => {
-            spanner_get_relation(adapter, state, ctx, conn, database, schema, identifier, token)
-        }
+        AdapterType::Spanner => spanner_get_relation(
+            adapter, state, ctx, conn, database, schema, identifier, token,
+        ),
         AdapterType::Databricks => databricks_get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
@@ -248,10 +248,37 @@ fn spanner_get_relation(
         return Ok(None);
     }
 
-    let column = batch.column_by_name("table_type").unwrap();
-    let string_array = column.as_any().downcast_ref::<StringArray>().unwrap();
+    let column = batch.column_by_name("table_type").ok_or_else(|| {
+        AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "INFORMATION_SCHEMA.TABLES result is missing the `table_type` column",
+        )
+    })?;
+    let string_array = column
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::UnexpectedResult,
+                "INFORMATION_SCHEMA.TABLES `table_type` column is not a string column",
+            )
+        })?;
     let relation_type_name = string_array.value(0).to_uppercase();
-    let relation_type = RelationType::from_adapter_type(AdapterType::Spanner, &relation_type_name);
+    // Map the GoogleSQL table_type here rather than via the panicking
+    // RelationType::from_adapter_type: an unexpected value should surface as an
+    // adapter error, not abort the process.
+    let relation_type = match relation_type_name.as_str() {
+        "BASE TABLE" | "CLONE" | "SNAPSHOT" | "TABLE" => RelationType::Table,
+        "VIEW" => RelationType::View,
+        "MATERIALIZED VIEW" => RelationType::MaterializedView,
+        "EXTERNAL" => RelationType::External,
+        other => {
+            return Err(AdapterError::new(
+                AdapterErrorKind::UnexpectedResult,
+                format!("unknown Spanner table_type '{other}' for relation {schema}.{identifier}"),
+            ));
+        }
+    };
 
     let relation = Box::new(
         Relation::new(

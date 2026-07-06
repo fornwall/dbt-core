@@ -932,9 +932,16 @@ impl AdapterImpl {
                 )?;
                 Ok(response)
             }
+            // Spanner speaks GoogleSQL but has no Python model support (no BigQuery
+            // DataFrames / Dataproc equivalent), so surface a clear NotSupported
+            // error instead of misrouting to the BigQuery Python submission path.
+            Impl(Spanner, _) | Replay(Spanner, _) => Err(AdapterError::new(
+                AdapterErrorKind::NotSupported,
+                "Python models are not supported for the Spanner adapter".to_string(),
+            )),
             // https://docs.getdbt.com/docs/core/connect-data-platform/bigquery-setup#running-python-models-on-bigquery-dataframes
             // https://docs.getdbt.com/reference/resource-configs/bigquery-configs#python-model-configuration
-            Impl(Bigquery | Spanner, _) => python::bigquery::submit_python_job(
+            Impl(Bigquery, _) => python::bigquery::submit_python_job(
                 self,
                 ctx,
                 conn,
@@ -947,7 +954,7 @@ impl AdapterImpl {
             Impl(Databricks, _) => {
                 python::databricks::submit_python_job(self, ctx, conn, state, model, compiled_code)
             }
-            Replay(Bigquery | Spanner | Databricks, replay) => {
+            Replay(Bigquery | Databricks, replay) => {
                 replay.replay_submit_python_job(ctx, conn, state, model, compiled_code)
             }
             Replay(
