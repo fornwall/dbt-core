@@ -25,7 +25,12 @@ concurrency:
 env:
   # adbc-spanner driver release to test against. Bump this together with the
   # option/behavior expectations in the adapter.
-  ADBC_SPANNER_VERSION: "0.3.9"
+  ADBC_SPANNER_VERSION: "0.4.0"
+  # SHA-256 of adbc-spanner-x86_64-unknown-linux-gnu.tar.gz for the pinned
+  # version, so the driver is pinned by content hash rather than a mutable
+  # release tag. Bump together with ADBC_SPANNER_VERSION; the value is published
+  # in the driver release's SHA256SUMS asset (`sha256sum -c SHA256SUMS`).
+  ADBC_SPANNER_SHA256: "12d7b3af417bae2d4670cca2e256bf3058da7ad23ca9fd607715fe83e703d34b"
 
 jobs:
   spanner-emulator:
@@ -40,6 +45,9 @@ jobs:
           set -euo pipefail
           url="https://github.com/fornwall/adbc-spanner/releases/download/v${ADBC_SPANNER_VERSION}/adbc-spanner-x86_64-unknown-linux-gnu.tar.gz"
           curl -sSL "$url" -o /tmp/adbc-spanner.tar.gz
+          # Verify the download against the pinned hash before unpacking, so a
+          # retagged/replaced release asset fails the job instead of running.
+          echo "${ADBC_SPANNER_SHA256}  /tmp/adbc-spanner.tar.gz" | sha256sum -c -
           tar xzf /tmp/adbc-spanner.tar.gz -C /tmp
           cp /tmp/adbc-spanner-x86_64-unknown-linux-gnu/libadbc_spanner.so lib/
           test -f lib/libadbc_spanner.so
