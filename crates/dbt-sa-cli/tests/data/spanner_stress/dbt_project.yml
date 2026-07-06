@@ -1,0 +1,4 @@
+name: spanner_stress
+version: "1.0.0"
+profile: spanner_stress
+model-paths: ["models"]

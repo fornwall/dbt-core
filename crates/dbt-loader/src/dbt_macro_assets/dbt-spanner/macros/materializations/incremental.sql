@@ -118,20 +118,14 @@
     {% call statement('main', auto_begin=False) -%}
       {{ spanner__create_table_as(False, target_relation, sql) }}
     {%- endcall %}
-    {% call statement('insert_rows') -%}
-      insert into {{ target_relation }} ({{ dest_cols_csv }})
-      {{ sql }}
-    {%- endcall %}
+    {{ spanner_insert_rows(target_relation, sql, dest_cols_csv) }}
 
   {% elif full_refresh_mode %}
     {#-- Full refresh: build into an intermediate table (DDL), populate (DML), swap. --#}
     {% call statement('main', auto_begin=False) -%}
       {{ spanner__create_table_as(False, intermediate_relation, sql) }}
     {%- endcall %}
-    {% call statement('insert_rows') -%}
-      insert into {{ intermediate_relation }} ({{ dest_cols_csv }})
-      {{ sql }}
-    {%- endcall %}
+    {{ spanner_insert_rows(intermediate_relation, sql, dest_cols_csv) }}
     {%- set need_swap = true -%}
 
   {% else %}
@@ -141,10 +135,7 @@
       {% call statement('create_staging', auto_begin=False) -%}
         {{ spanner__create_table_as(False, staging_relation, sql) }}
       {%- endcall %}
-      {% call statement('populate_staging') -%}
-        insert into {{ staging_relation }} ({{ dest_cols_csv }})
-        {{ sql }}
-      {%- endcall %}
+      {{ spanner_insert_rows(staging_relation, sql, dest_cols_csv, 'populate_staging') }}
       {%- set dml_source = staging_relation -%}
       {%- set need_staging_cleanup = true -%}
     {% else %}

@@ -89,6 +89,63 @@
   {{ return(names) }}
 {% endmacro %}
 
+{#-- Insert the rows produced by `source_sql` into `relation`.
+
+     Spanner bounds how much a single read-write transaction may write (tens of
+     thousands of mutations, counted per row * column written, plus ~100 MB per
+     commit), so one `INSERT ... SELECT` over a large model fails once the output
+     is big. When the model sets `meta.spanner_insert_chunk_size` to a positive N,
+     the insert is split into primary-key-ordered pages of N rows, each issued as
+     its own statement; the driver is autocommit, so each page commits
+     independently and stays under the limit. A size of 0 (the default) keeps the
+     original single-statement insert, so existing models are unaffected. The knob
+     rides the standard freeform `meta` config, e.g. a model with
+     `config(materialized='table', primary_key=['id'],
+     meta={'spanner_insert_chunk_size': 5000})`.
+
+     Chunked mode re-executes `source_sql` once per page (plus once to count the
+     rows), so it requires a deterministic model; pages are ordered by the primary
+     key, which is unique, giving a stable total order for LIMIT/OFFSET paging.
+
+     Only the callers where `main` is a separate statement (the table build and the
+     first-run / full-refresh / staging inserts) route through this — never the
+     incremental `main` insert, which must stay a single `statement('main')`. --#}
+{% macro spanner_insert_rows(relation, source_sql, dest_cols_csv, statement_name='insert_rows') %}
+  {%- set model_meta = config.get('meta', {}) or {} -%}
+  {%- set chunk_size = (model_meta['spanner_insert_chunk_size'] if 'spanner_insert_chunk_size' in model_meta else 0) | int -%}
+  {%- if chunk_size <= 0 -%}
+    {% call statement(statement_name) -%}
+      insert into {{ relation }} ({{ dest_cols_csv }})
+      {{ source_sql }}
+    {%- endcall %}
+  {%- else -%}
+    {%- set primary_key = spanner_get_primary_key() -%}
+    {%- set pk_cols = [] -%}
+    {%- for key in primary_key -%}
+      {%- do pk_cols.append(adapter.quote(key | trim)) -%}
+    {%- endfor -%}
+    {%- set order_by = pk_cols | join(', ') -%}
+    {%- set count_sql -%}
+      select count(*) as n from (
+        {{ source_sql }}
+      ) as __dbt_src
+    {%- endset -%}
+    {%- set total = run_query(count_sql).columns[0].values()[0] | int -%}
+    {%- set n_chunks = ((total + chunk_size - 1) // chunk_size) | int -%}
+    {%- for i in range(n_chunks) -%}
+      {% call statement(statement_name ~ '_' ~ i) -%}
+        insert into {{ relation }} ({{ dest_cols_csv }})
+        select {{ dest_cols_csv }}
+        from (
+          {{ source_sql }}
+        ) as __dbt_src
+        order by {{ order_by }}
+        limit {{ chunk_size }} offset {{ i * chunk_size }}
+      {%- endcall %}
+    {%- endfor -%}
+  {%- endif -%}
+{% endmacro %}
+
 {#-- Schema-only CREATE TABLE. On Spanner this creates an EMPTY table (no data);
      the `table` materialization populates it with a separate INSERT..SELECT. --#}
 {% macro spanner__create_table_as(temporary, relation, compiled_code, language='sql') -%}
@@ -152,12 +209,11 @@
   {%- endcall %}
 
   {#-- 2. Populate the intermediate table (DML). Spanner INSERT requires an
-         explicit column list, in the same order as the SELECT. --#}
+         explicit column list, in the same order as the SELECT. Large loads are
+         split into primary-key-ordered chunks when spanner_insert_chunk_size is
+         set (see spanner_insert_rows). --#}
   {%- set dest_columns = spanner_get_column_names_from_query(sql, sql_header) -%}
-  {% call statement('insert_rows') -%}
-    insert into {{ intermediate_relation }} ({{ dest_columns | join(', ') }})
-    {{ sql }}
-  {%- endcall %}
+  {{ spanner_insert_rows(intermediate_relation, sql, dest_columns | join(', ')) }}
 
   {#-- 3. Move the current table aside (DDL), if it still exists. --#}
   {% if existing_relation is not none %}

@@ -140,6 +140,57 @@ fn run_dbt_against_emulator() -> Result<(), String> {
     )?;
 
     let _ = std::fs::remove_dir_all(&project_dir);
+
+    // Stress the chunked-insert path against the same database.
+    run_chunked_insert_stress()?;
+
+    Ok(())
+}
+
+/// Materialize a 50,000-row table configured with a small
+/// `spanner_insert_chunk_size`, forcing the table build to issue many separate
+/// primary-key-ordered INSERT commits (a single 50k-row insert would exceed
+/// Spanner's per-transaction mutation limit). Assert every row lands exactly once.
+fn run_chunked_insert_stress() -> Result<(), String> {
+    const EXPECTED_ROWS: i64 = 50_000;
+
+    let stress_dir = std::env::temp_dir().join(format!("spanner_stress_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stress_dir);
+    copy_dir(&stress_fixture_dir(), &stress_dir)
+        .map_err(|e| format!("copying stress fixture failed: {e}"))?;
+
+    let out = run_dbt(&["run"], &stress_dir)?;
+    assert_dbt_succeeded(&out, "chunked-insert stress run")?;
+
+    let session = create_session()?;
+    // All rows present, and each exactly once (no gaps or duplicates from paging).
+    assert_count(
+        &session,
+        "SELECT COUNT(*) AS n FROM spanner_stress",
+        EXPECTED_ROWS,
+        "chunked stress: total rows",
+    )?;
+    assert_count(
+        &session,
+        "SELECT COUNT(DISTINCT id) AS n FROM spanner_stress",
+        EXPECTED_ROWS,
+        "chunked stress: distinct ids (no duplicates/gaps)",
+    )?;
+    // The paging preserved the full key range.
+    assert_scalar(
+        &session,
+        "SELECT MIN(id) AS n FROM spanner_stress",
+        "1",
+        "chunked stress: min id",
+    )?;
+    assert_scalar(
+        &session,
+        "SELECT MAX(id) AS n FROM spanner_stress",
+        "50000",
+        "chunked stress: max id",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&stress_dir);
     Ok(())
 }
 
@@ -306,4 +357,11 @@ fn fixture_dir() -> PathBuf {
         .join("tests")
         .join("data")
         .join("spanner_test")
+}
+
+fn stress_fixture_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+        .join("spanner_stress")
 }
