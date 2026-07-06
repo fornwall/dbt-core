@@ -34,6 +34,7 @@ pub fn backend_of(adapter_type: AdapterType) -> Backend {
         AdapterType::Postgres => Backend::Postgres,
         AdapterType::Snowflake => Backend::Snowflake,
         AdapterType::Bigquery => Backend::BigQuery,
+        AdapterType::Spanner => Backend::Spanner,
         AdapterType::Databricks => Backend::Databricks,
         AdapterType::Redshift => Backend::Redshift,
         AdapterType::Salesforce => Backend::Salesforce,

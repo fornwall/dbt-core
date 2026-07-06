@@ -55,6 +55,8 @@ pub enum Backend {
     Snowflake,
     /// BigQuery driver implementation (ADBC).
     BigQuery,
+    /// Google Cloud Spanner driver implementation (ADBC, GoogleSQL dialect).
+    Spanner,
     /// PostgreSQL driver implementation (ADBC).
     Postgres,
     /// Databricks driver implementation (ADBC).
@@ -103,6 +105,7 @@ impl fmt::Display for Backend {
         match self {
             Backend::Snowflake => write!(f, "Snowflake"),
             Backend::BigQuery => write!(f, "BigQuery"),
+            Backend::Spanner => write!(f, "Spanner"),
             Backend::Postgres => write!(f, "PostgreSQL"),
             Backend::Databricks => write!(f, "Databricks"),
             Backend::Redshift => write!(f, "Redshift"),
@@ -124,6 +127,8 @@ impl Backend {
         match self {
             Backend::Snowflake => Some("adbc_driver_snowflake"),
             Backend::BigQuery => Some("adbc_driver_bigquery"),
+            // https://github.com/fornwall/adbc-spanner — loadable as libadbc_spanner.so
+            Backend::Spanner => Some("adbc_spanner"),
             Backend::Postgres => Some("adbc_driver_postgresql"),
             Backend::Databricks => Some("adbc_driver_databricks"),
             Backend::Salesforce => Some("adbc_driver_salesforce"),
@@ -142,6 +147,8 @@ impl Backend {
     pub fn adbc_driver_entrypoint(&self) -> Option<&'static [u8]> {
         match self {
             Backend::Snowflake => Some(b"SnowflakeDriverInit"),
+            // https://github.com/fornwall/adbc-spanner exports AdbcSpannerInit.
+            Backend::Spanner => Some(b"AdbcSpannerInit"),
             Backend::DuckDB | Backend::DuckDBExtended => Some(b"duckdb_adbc_init"),
             Backend::Fdcs => Some(b"AdbcQuackInit"),
             Backend::Generic {
@@ -404,7 +411,9 @@ impl AdbcDriver {
                 }
             }
             // CDN strategy for non-CDN drivers: just fall back to the system strategy.
-            (CdnCache | SystemThenCdnCache | Remote, Athena | Exasol) => System(None),
+            // Spanner's ADBC driver is not published to the dbt Labs CDN (yet); it must be
+            // installed manually by the user, so treat it like Athena/Exasol.
+            (CdnCache | SystemThenCdnCache | Remote, Athena | Exasol | Spanner) => System(None),
             // Generic drivers can only be loaded from a file, so fallback to the System strategy.
             (CdnCache | SystemThenCdnCache | Remote, Generic { library_name, .. }) => {
                 System(Some(library_name.to_string()))

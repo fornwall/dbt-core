@@ -21,6 +21,7 @@ mod postgres;
 mod redshift;
 mod salesforce;
 mod snowflake;
+mod spanner;
 mod spark;
 mod sqlserver;
 #[cfg(test)]
@@ -84,6 +85,7 @@ pub fn auth_for_backend(
         Backend::Snowflake => Box::new(snowflake::SnowflakeAuth { warning_printer }),
         Backend::Postgres => Box::new(postgres::PostgresAuth {}),
         Backend::BigQuery => Box::new(bigquery::BigqueryAuth {}),
+        Backend::Spanner => Box::new(spanner::SpannerAuth {}),
         Backend::Databricks => Box::new(databricks::DatabricksAuth {}),
         Backend::Redshift => Box::new(redshift::RedshiftAuth {}),
         Backend::Salesforce => Box::new(salesforce::SalesforceAuth {}),

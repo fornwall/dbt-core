@@ -23,6 +23,7 @@ fn parse_backend(s: &str) -> Result<Backend> {
     match s.to_lowercase().as_str() {
         "snowflake" => Ok(Backend::Snowflake),
         "bigquery" => Ok(Backend::BigQuery),
+        "spanner" => Ok(Backend::Spanner),
         "postgres" | "postgresql" => Ok(Backend::Postgres),
         "databricks" => Ok(Backend::Databricks),
         "redshift" => Ok(Backend::Redshift),

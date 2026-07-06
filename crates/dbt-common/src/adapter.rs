@@ -7,6 +7,8 @@ pub fn dialect_of(adapter_type: AdapterType) -> Option<Dialect> {
         Postgres => Dialect::Postgresql,
         Snowflake => Dialect::Snowflake,
         Bigquery => Dialect::Bigquery,
+        // Spanner speaks GoogleSQL, so it reuses the BigQuery dialect for parsing/analysis.
+        Spanner => Dialect::Bigquery,
         // TODO(serramatutu): switch Spark to Spark dialect once frontend looks good
         Databricks | Spark => Dialect::Databricks,
         Redshift => Dialect::Redshift,

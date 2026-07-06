@@ -63,6 +63,7 @@ pub mod fdcs;
 pub mod redshift;
 pub mod salesforce;
 pub mod snowflake;
+pub mod spanner;
 pub mod spark;
 
 // REPL for ADBC drivers

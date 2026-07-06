@@ -38,13 +38,17 @@ impl RelationType {
     pub fn from_adapter_type(adapter_type: AdapterType, type_string: &str) -> Self {
         match adapter_type {
             // https://cloud.google.com/bigquery/docs/information-schema-tables
-            AdapterType::Bigquery => match type_string.to_uppercase().as_str() {
-                "BASE TABLE" | "CLONE" | "SNAPSHOT" | "TABLE" => RelationType::Table,
-                "VIEW" => RelationType::View,
-                "MATERIALIZED VIEW" => RelationType::MaterializedView,
-                "EXTERNAL" => RelationType::External,
-                _ => panic!("unknown table type: {type_string}"),
-            },
+            // Spanner's INFORMATION_SCHEMA.TABLES.table_type uses the same GoogleSQL
+            // values ('BASE TABLE', 'VIEW').
+            AdapterType::Bigquery | AdapterType::Spanner => {
+                match type_string.to_uppercase().as_str() {
+                    "BASE TABLE" | "CLONE" | "SNAPSHOT" | "TABLE" => RelationType::Table,
+                    "VIEW" => RelationType::View,
+                    "MATERIALIZED VIEW" => RelationType::MaterializedView,
+                    "EXTERNAL" => RelationType::External,
+                    _ => panic!("unknown table type: {type_string}"),
+                }
+            }
             // https://docs.databricks.com/aws/en/sql/language-manual/information-schema/tables#table-types
             AdapterType::Databricks => match type_string.to_uppercase().as_str() {
                 "TABLE" => RelationType::Table,

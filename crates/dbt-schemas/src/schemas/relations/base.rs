@@ -534,7 +534,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
             ),
 
             // See: https://github.com/dbt-labs/dbt-adapters/blob/221923bf60efc6a099681a82be89e86bef587f55/dbt-bigquery/src/dbt/adapters/bigquery/relation.py#L124
-            AdapterType::Bigquery => (
+            AdapterType::Bigquery | AdapterType::Spanner => (
                 start.map(|start| format!("cast({event_time} as timestamp) >= '{start}'")),
                 end.map(|end| format!("cast({event_time} as timestamp) < '{end}'")),
             ),

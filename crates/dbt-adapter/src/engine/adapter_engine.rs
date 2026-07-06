@@ -313,7 +313,12 @@ pub(crate) fn adbc_execute_with_options(
         // ClickHouse DDL/DML does not return an Arrow IPC schema header:
         // This check should be removed after the fix lands in ClickHouse ADBC driver:
         // https://github.com/ClickHouse/adbc_clickhouse/pull/54
-        if adapter_type == AdapterType::ClickHouse
+        //
+        // Spanner's ADBC driver requires DML to run via execute_update (a read/write
+        // transaction); its query path uses a single-use read transaction that rejects
+        // DML. is_update_statement flags only DML for Spanner (DDL is handled by the
+        // driver on either path).
+        if (adapter_type == AdapterType::ClickHouse || adapter_type == AdapterType::Spanner)
             && is_update_statement(sql.as_ref(), adapter_type)
         {
             stmt.execute_update()?;

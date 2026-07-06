@@ -22,7 +22,8 @@ pub fn sqlparser_dialect_for(adapter_type: AdapterType) -> &'static dyn Dialect 
     use AdapterType::*;
     match adapter_type {
         Snowflake => &SNOWFLAKE,
-        Bigquery => &BIGQUERY,
+        // Spanner speaks GoogleSQL, so it uses the BigQuery sqlparser dialect.
+        Bigquery | Spanner => &BIGQUERY,
         Databricks => &DATABRICKS,
         Redshift => &REDSHIFT,
         Postgres => &POSTGRES,

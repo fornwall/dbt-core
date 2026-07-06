@@ -452,7 +452,8 @@ impl FromStr for Dialect {
             "duckdb" | "duck" => Ok(Dialect::DuckDB),
             "snowflake" | "sf" => Ok(Dialect::Snowflake),
             "redshift" | "rs" => Ok(Dialect::Redshift),
-            "bigquery" | "bq" => Ok(Dialect::BigQuery),
+            // Spanner speaks GoogleSQL, so it maps to the BigQuery MetricFlow dialect.
+            "bigquery" | "bq" | "spanner" => Ok(Dialect::BigQuery),
             "databricks" | "spark" => Ok(Dialect::Databricks),
             other => Err(MetricFlowError::Other(format!(
                 "unknown dialect: {other:?}. Use 'duckdb', 'snowflake', 'redshift', 'bigquery', or 'databricks'"

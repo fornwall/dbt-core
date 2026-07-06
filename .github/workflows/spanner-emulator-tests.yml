@@ -1,0 +1,60 @@
+# Spanner adapter integration test against the Cloud Spanner emulator.
+#
+# This is an OPTIONAL / non-required check for the experimental Spanner adapter.
+# It is intentionally kept out of the required-checks set (configure that in the
+# repository branch-protection settings, not here). It boots the Spanner emulator
+# via the `dbt-test-containers` harness and runs the committed `spanner_test`
+# fixture end-to-end with the real `adbc-spanner` driver.
+name: Spanner emulator tests
+
+on:
+  pull_request:
+    paths:
+      - "crates/dbt-loader/src/dbt_macro_assets/dbt-spanner/**"
+      - "crates/dbt-auth/src/spanner/**"
+      - "crates/dbt-adbc/src/spanner.rs"
+      - "crates/dbt-sa-cli/tests/spanner_emulator.rs"
+      - "crates/dbt-sa-cli/tests/data/spanner_test/**"
+      - ".github/workflows/spanner-emulator-tests.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: spanner-emulator-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # adbc-spanner driver release to test against. Bump this together with the
+  # option/behavior expectations in the adapter.
+  ADBC_SPANNER_VERSION: "0.3.9"
+
+jobs:
+  spanner-emulator:
+    runs-on: ubuntu-latest
+    # Docker is available on ubuntu runners; the test pulls the public emulator
+    # image itself via dbt-test-containers.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the pinned adbc-spanner driver into lib/
+        run: |
+          set -euo pipefail
+          url="https://github.com/fornwall/adbc-spanner/releases/download/v${ADBC_SPANNER_VERSION}/adbc-spanner-x86_64-unknown-linux-gnu.tar.gz"
+          curl -sSL "$url" -o /tmp/adbc-spanner.tar.gz
+          tar xzf /tmp/adbc-spanner.tar.gz -C /tmp
+          cp /tmp/adbc-spanner-x86_64-unknown-linux-gnu/libadbc_spanner.so lib/
+          test -f lib/libadbc_spanner.so
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Run the Spanner emulator integration test
+        run: |
+          cargo nextest run -p dbt-sa-cli \
+            --test spanner_emulator \
+            --run-ignored ignored-only \
+            --no-capture

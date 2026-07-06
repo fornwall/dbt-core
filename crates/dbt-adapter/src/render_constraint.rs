@@ -54,7 +54,7 @@ pub fn render_model_constraint(
     };
 
     rendered.and_then(|rendered| match adapter_type {
-        AdapterType::Bigquery => match constraint.type_ {
+        AdapterType::Bigquery | AdapterType::Spanner => match constraint.type_ {
             ConstraintType::PrimaryKey | ConstraintType::ForeignKey => {
                 Some(format!("{rendered} not enforced"))
             }
@@ -95,7 +95,7 @@ pub fn render_column_constraint(
 
     rendered.and_then(|r| {
         match adapter_type {
-            AdapterType::Bigquery => {
+            AdapterType::Bigquery | AdapterType::Spanner => {
                 match constraint.type_ {
                     ConstraintType::PrimaryKey | ConstraintType::ForeignKey => {
                         Some(format!("{} not enforced", r.trim()))

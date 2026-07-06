@@ -120,8 +120,9 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
             // SAFETY: literal 127 is never 0
             Some(unsafe { NonZero::new_unchecked(127) })
         }
-        Snowflake | Bigquery | Databricks | Spark | DuckDB | Salesforce | Fabric | ClickHouse
-        | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle | Fdcs => None,
+        Snowflake | Bigquery | Spanner | Databricks | Spark | DuckDB | Salesforce | Fabric
+        | ClickHouse | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle
+        | Fdcs => None,
     }
 }
 
@@ -139,7 +140,7 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
 pub const fn canonical_quote(backend: AdapterType) -> QuotingStyle {
     use AdapterType::*;
     match backend {
-        Bigquery | Databricks | Spark | Athena => QuotingStyle::Backtick,
+        Bigquery | Spanner | Databricks | Spark | Athena => QuotingStyle::Backtick,
         ClickHouse | Exasol | Snowflake | Redshift | Postgres | Salesforce | DuckDB => {
             QuotingStyle::Double
         }
@@ -155,7 +156,7 @@ pub const fn canonical_quote(backend: AdapterType) -> QuotingStyle {
 pub fn is_valid_ident_char(c: char, backend: AdapterType) -> bool {
     use AdapterType::*;
     match backend {
-        Bigquery => c.is_alphanumeric() || ['_', '-', '$'].contains(&c),
+        Bigquery | Spanner => c.is_alphanumeric() || ['_', '-', '$'].contains(&c),
         Snowflake => {
             // TODO: revert this once
             // https://github.com/sdf-labs/sdf/issues/3328 is fixed:
@@ -216,7 +217,7 @@ pub fn must_be_quoted(id: &str, backend: AdapterType) -> bool {
         !is_valid_ident_char(c, backend)
             // BigQuery allows hyphens in unquoted identifiers in certain
             // contexts (e.g. table names), but we still quote them here
-            || (matches!(backend, AdapterType::Bigquery) && c == '-')
+            || (matches!(backend, AdapterType::Bigquery | AdapterType::Spanner) && c == '-')
     });
     // Invalid characters MUST be in a quoted identifier (sometimes escaped)
     if has_invalid_char {

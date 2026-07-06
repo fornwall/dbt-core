@@ -273,7 +273,7 @@ impl AdapterImpl {
                     match self.adapter_type() {
                         Snowflake => Box::new(SnowflakeMetadataAdapter::new(engine))
                             as Box<dyn MetadataAdapter>,
-                        Bigquery => Box::new(BigqueryMetadataAdapter::new(engine))
+                        Bigquery | Spanner => Box::new(BigqueryMetadataAdapter::new(engine))
                             as Box<dyn MetadataAdapter>,
                         Databricks | Spark => Box::new(DatabricksMetadataAdapter::new(engine))
                             as Box<dyn MetadataAdapter>,
@@ -519,6 +519,8 @@ impl AdapterImpl {
             Postgres | DuckDB | Fdcs => &[Append, DeleteInsert, Merge, Microbatch],
             Snowflake => &[Append, DeleteInsert, InsertOverwrite, Merge, Microbatch],
             Bigquery => &[Append],
+            // Spanner (GoogleSQL) has no MERGE, so delete+insert replaces it.
+            Spanner => &[Append, DeleteInsert],
             Databricks => &[Append, Merge, InsertOverwrite, ReplaceWhere],
             Redshift => &[Append, DeleteInsert, Merge, Microbatch],
             Fabric => &[Append, DeleteInsert, Merge, Microbatch],
@@ -614,7 +616,7 @@ impl AdapterImpl {
             //
             // DuckDB: temp tables are connection-scoped; batching CREATE TEMP + DML in one
             // execute() call avoids the need for cross-call connection caching.
-            Bigquery | DuckDB => vec![sql.to_string()],
+            Bigquery | Spanner | DuckDB => vec![sql.to_string()],
             _ => splitter.split(sql, adapter_type),
         };
         // Filter out empty and comment-only statements.
@@ -681,7 +683,7 @@ impl AdapterImpl {
         // duplicate columns to `col_2`, `col_3`, etc.
         // BigQuery is the exception to this deduping
         let last_batch = match self.adapter_type() {
-            Bigquery => last_batch,
+            Bigquery | Spanner => last_batch,
             _ => {
                 let node_id = state.and_then(node_id_from_state);
                 last_batch.disambiguate_column_names(Some(warn_duplicate_columns(node_id)))
@@ -857,7 +859,7 @@ impl AdapterImpl {
                 bindings,
                 abridge_sql_log,
             ),
-            Impl(Bigquery, _) => {
+            Impl(Bigquery | Spanner, _) => {
                 // Bigquery does not support add_query
                 Err(AdapterError::new(
                     AdapterErrorKind::NotSupported,
@@ -930,6 +932,13 @@ impl AdapterImpl {
                 )?;
                 Ok(response)
             }
+            // Spanner speaks GoogleSQL but has no Python model support (no BigQuery
+            // DataFrames / Dataproc equivalent), so surface a clear NotSupported
+            // error instead of misrouting to the BigQuery Python submission path.
+            Impl(Spanner, _) | Replay(Spanner, _) => Err(AdapterError::new(
+                AdapterErrorKind::NotSupported,
+                "Python models are not supported for the Spanner adapter".to_string(),
+            )),
             // https://docs.getdbt.com/docs/core/connect-data-platform/bigquery-setup#running-python-models-on-bigquery-dataframes
             // https://docs.getdbt.com/reference/resource-configs/bigquery-configs#python-model-configuration
             Impl(Bigquery, _) => python::bigquery::submit_python_job(
@@ -1008,7 +1017,7 @@ impl AdapterImpl {
                         "namespace"
                     }
                 }
-                Bigquery => "schema_name",
+                Bigquery | Spanner => "schema_name",
                 Redshift => {
                     if get_bool_config(self.engine().as_ref(), "datasharing")? {
                         "schema_name"
@@ -1303,9 +1312,9 @@ impl AdapterImpl {
                     Value::from_object(table),
                 )])))
             }
-            Postgres | Bigquery | Databricks | Redshift | Salesforce | Spark | DuckDB | Fdcs
-            | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
-            | Oracle => {
+            Postgres | Bigquery | Spanner | Databricks | Redshift | Salesforce | Spark | DuckDB
+            | Fdcs | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion
+            | Dremio | Oracle => {
                 let err = format!(
                     "describe_dynamic_table is not supported by the {} adapter",
                     adapter_type
@@ -1699,7 +1708,7 @@ impl AdapterImpl {
     ) -> AdapterResult<Vec<Column>> {
         // Run a Jinja macro to fetch columns
         let macro_result: AdapterResult<Value> = match self.adapter_type() {
-            Bigquery => unreachable!(),
+            Bigquery | Spanner => unreachable!(),
             Databricks => {
                 // use DESCRIBE TABLE EXTENDED ... AS JSON for full type strings
                 // Plain DESCRIBE TABLE truncates long data types server-side
@@ -1878,7 +1887,7 @@ impl AdapterImpl {
         match self.adapter_type() {
             // TODO: Should we add the schema that was fetched here to the schema cache
             // to avoid further remote lookups?
-            Bigquery => self.get_columns_in_relation_via_adbc(state, relation),
+            Bigquery | Spanner => self.get_columns_in_relation_via_adbc(state, relation),
             _ => self.get_columns_in_relation_via_macro(state, relation),
         }
     }
@@ -1945,7 +1954,7 @@ impl AdapterImpl {
         // Post-process columns (regardless of how they've been fetched), or whether they've
         // been cached or not
         let columns = match self.adapter_type() {
-            Bigquery => {
+            Bigquery | Spanner => {
                 columns.retain(|c| !BIGQUERY_PSEUDOCOLUMNS.contains(&c.name()));
                 columns
             }
@@ -2003,7 +2012,7 @@ impl AdapterImpl {
     ) -> AdapterResult<Value> {
         match self.inner_adapter() {
             Replay(_, replay) => replay.replay_truncate_relation(state, relation),
-            Impl(Bigquery, _) => {
+            Impl(Bigquery | Spanner, _) => {
                 // BigQuery does not support truncate_relation
                 Err(AdapterError::new(
                     AdapterErrorKind::NotSupported,
@@ -2062,8 +2071,9 @@ impl AdapterImpl {
                 }
             }
             Impl(
-                Postgres | Bigquery | Databricks | Redshift | Spark | DuckDB | Fdcs | Fabric
-                | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio | Oracle,
+                Postgres | Bigquery | Spanner | Databricks | Redshift | Spark | DuckDB | Fdcs
+                | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
+                | Oracle,
                 _,
             ) => {
                 if quote_config.unwrap_or(true) {
@@ -2127,7 +2137,7 @@ impl AdapterImpl {
             Replay(_, replay) => {
                 replay.replay_expand_target_column_types(state, from_relation, to_relation)
             }
-            Impl(Bigquery, _) | Impl(DuckDB, _) | Impl(Fdcs, _) => {
+            Impl(Bigquery | Spanner, _) | Impl(DuckDB, _) | Impl(Fdcs, _) => {
                 // This method is a noop for BigQuery and DuckDB.
                 // BigQuery: https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L260-L261
                 // DuckDB: type widening (e.g. INT→BIGINT) is handled implicitly;
@@ -2198,7 +2208,7 @@ impl AdapterImpl {
         token: CancellationToken,
     ) -> AdapterResult<Value> {
         match self.adapter_type() {
-            Bigquery => {
+            Bigquery | Spanner => {
                 let database = relation.database_as_str()?;
                 let table = relation.identifier_as_str()?;
                 let schema = relation.schema_as_str()?;
@@ -2303,7 +2313,7 @@ impl AdapterImpl {
                 }
                 Ok(result)
             }
-            adapter_type @ Bigquery => {
+            adapter_type @ (Bigquery | Spanner) => {
                 let mut rendered_constraints: BTreeMap<String, String> = BTreeMap::new();
                 for (_, column) in columns_map.iter() {
                     for constraint in &column.constraints {
@@ -2378,10 +2388,10 @@ impl AdapterImpl {
             _ => None,
         };
         rendered.and_then(|r| match (self.adapter_type(), constraint.type_) {
-            (Bigquery, ConstraintType::PrimaryKey | ConstraintType::ForeignKey) => {
+            (Bigquery | Spanner, ConstraintType::PrimaryKey | ConstraintType::ForeignKey) => {
                 Some(format!("{r} not enforced"))
             }
-            (Bigquery, _) => None,
+            (Bigquery | Spanner, _) => None,
             _ => Some(r.trim().to_string()),
         })
     }
@@ -2412,12 +2422,12 @@ impl AdapterImpl {
 
             // BigQuery
             // https://github.com/dbt-labs/dbt-adapters/blob/4a00354a497214d9043bf4122810fe2d04de17bb/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L132
-            (Bigquery, NotNull) => Enforced,
-            (Bigquery, Unique) => NotSupported,
-            (Bigquery, PrimaryKey) => NotEnforced,
-            (Bigquery, ForeignKey) => NotEnforced,
-            (Bigquery, Check) => NotSupported,
-            (Bigquery, Custom) => NotSupported,
+            (Bigquery | Spanner, NotNull) => Enforced,
+            (Bigquery | Spanner, Unique) => NotSupported,
+            (Bigquery | Spanner, PrimaryKey) => NotEnforced,
+            (Bigquery | Spanner, ForeignKey) => NotEnforced,
+            (Bigquery | Spanner, Check) => NotSupported,
+            (Bigquery | Spanner, Custom) => NotSupported,
 
             // Databricks
             // https://github.com/databricks/dbt-databricks/blob/822b105b15e644676d9e1f47cbfd765cd4c1541f/dbt/adapters/databricks/constraints.py#L17
@@ -2571,7 +2581,7 @@ impl AdapterImpl {
         }
 
         match self.adapter_type() {
-            Postgres | Bigquery | DuckDB | Fdcs => {
+            Postgres | Bigquery | Spanner | DuckDB | Fdcs => {
                 let grantee_cols = record_batch.column_values::<StringArray>("grantee")?;
                 let privilege_cols = record_batch.column_values::<StringArray>("privilege_type")?;
 
@@ -2715,7 +2725,7 @@ impl AdapterImpl {
         constraints: Option<BTreeMap<String, String>>,
     ) -> AdapterResult<IndexMap<String, DbtColumn>> {
         match self.adapter_type() {
-            Bigquery => nest_column_data_types(columns, constraints),
+            Bigquery | Spanner => nest_column_data_types(columns, constraints),
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB | Fdcs
             | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
             | Oracle => {
@@ -2758,7 +2768,7 @@ impl AdapterImpl {
         data_type: &str,
     ) -> Result<Value, minijinja::Error> {
         match self.adapter_type() {
-            Bigquery => Ok(Value::from(render_struct_projection(col_name, data_type))),
+            Bigquery | Spanner => Ok(Value::from(render_struct_projection(col_name, data_type))),
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB | Fdcs
             | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
             | Oracle => {
@@ -2792,7 +2802,7 @@ impl AdapterImpl {
         token: CancellationToken,
     ) -> AdapterResult<Value> {
         match self.adapter_type() {
-            Bigquery => {
+            Bigquery | Spanner => {
                 // https://github.com/dbt-labs/dbt-adapters/blob/4a00354a497214d9043bf4122810fe2d04de17bb/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L834
                 /// but instead of locking the thread, put the lock on the dataset
                 static DATASET_LOCK: LazyLock<DashMap<String, bool>> = LazyLock::new(DashMap::new);
@@ -2880,7 +2890,7 @@ impl AdapterImpl {
         token: CancellationToken,
     ) -> AdapterResult<Option<String>> {
         match self.adapter_type() {
-            Bigquery => {
+            Bigquery | Spanner => {
                 // https://cloud.google.com/bigquery/docs/information-schema-datasets-schemata
                 // https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L853-L854
                 let sql = format!(
@@ -2920,7 +2930,7 @@ impl AdapterImpl {
         token: CancellationToken,
     ) -> AdapterResult<Value> {
         match self.adapter_type() {
-            Bigquery => {
+            Bigquery | Spanner => {
                 // https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L686-L696
                 // Use BigQuery API via driver option instead of SQL
                 // Reuse QUERY_DESTINATION_TABLE for the table reference
@@ -2973,7 +2983,7 @@ impl AdapterImpl {
         token: CancellationToken,
     ) -> AdapterResult<Value> {
         match self.adapter_type() {
-            Bigquery => {
+            Bigquery | Spanner => {
                 // https://github.com/dbt-labs/dbt-adapters/blob/4b3966efc50b1d013907a88bee4ab8ebd022d17a/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L668
                 //
                 // TODO: Because we don't support custom materialization yet, we're breaking this
@@ -3052,7 +3062,7 @@ impl AdapterImpl {
         token: CancellationToken,
     ) -> AdapterResult<Value> {
         match self.adapter_type() {
-            Bigquery => {
+            Bigquery | Spanner => {
                 let table = relation.identifier_as_str()?;
                 let schema = relation.schema_as_str()?;
 
@@ -3130,7 +3140,7 @@ impl AdapterImpl {
     ) -> AdapterResult<Vec<Column>> {
         match self.inner_adapter() {
             Replay(_, replay) => replay.replay_get_column_schema_from_query(state, conn, ctx),
-            Impl(Bigquery, engine) => {
+            Impl(Bigquery | Spanner, engine) => {
                 // https://github.com/dbt-labs/dbt-adapters/blob/f4dfd350942cce11ff25e3d22f2bee9e60b12b6d/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L444
                 let batch = engine.execute(Some(state), conn, ctx, sql, token)?;
                 let schema = batch.schema();
@@ -3229,9 +3239,9 @@ impl AdapterImpl {
                 Ok(Value::from(()))
             }
             Impl(
-                adapter_type @ (Snowflake | Bigquery | Databricks | Salesforce | Spark | Fabric
-                | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
-                | Oracle),
+                adapter_type @ (Snowflake | Bigquery | Spanner | Databricks | Salesforce | Spark
+                | Fabric | Exasol | Starburst | Athena | Trino | Datafusion
+                | Dremio | Oracle),
                 _,
             ) => {
                 unimplemented!(
@@ -3259,7 +3269,7 @@ impl AdapterImpl {
     ) -> AdapterResult<bool> {
         use crate::relation::bigquery::config::components::{ClusterByLoader, PartitionByLoader};
         match self.adapter_type() {
-            Bigquery => {
+            Bigquery | Spanner => {
                 if let (Replay(_, replay), Some(state)) = (self.inner_adapter(), state) {
                     return replay.replay_is_replaceable(state);
                 }
@@ -3321,7 +3331,7 @@ impl AdapterImpl {
     /// BigQueryAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L670
     pub fn parse_partition_by(&self, partition_by: Value) -> AdapterResult<Value> {
         match self.adapter_type() {
-            Bigquery => {
+            Bigquery | Spanner => {
                 // https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L579-L586
                 // Pure config parse; safe for both BigQuery and Replay (when adapter type is BigQuery)
                 let raw_partition_by = partition_by;
@@ -3384,13 +3394,15 @@ impl AdapterImpl {
         temporary: bool,
     ) -> AdapterResult<BTreeMap<String, Value>> {
         match self.adapter_type() {
-            adapter_type @ Bigquery => metadata::bigquery::object_options::get_table_options_value(
-                state,
-                config,
-                node,
-                temporary,
-                adapter_type,
-            ),
+            adapter_type @ (Bigquery | Spanner) => {
+                metadata::bigquery::object_options::get_table_options_value(
+                    state,
+                    config,
+                    node,
+                    temporary,
+                    adapter_type,
+                )
+            }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB | Fdcs
             | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
             | Oracle => {
@@ -3407,7 +3419,7 @@ impl AdapterImpl {
         common_attr: &CommonAttributes,
     ) -> AdapterResult<BTreeMap<String, Value>> {
         match self.adapter_type() {
-            Bigquery => Ok(
+            Bigquery | Spanner => Ok(
                 metadata::bigquery::object_options::get_common_table_options_value(
                     state,
                     config,
@@ -3432,7 +3444,7 @@ impl AdapterImpl {
         temporary: bool,
     ) -> Result<Value, minijinja::Error> {
         match self.adapter_type() {
-            Bigquery => {
+            Bigquery | Spanner => {
                 let node = node.as_internal_node();
                 let options = metadata::bigquery::object_options::get_common_table_options_value(
                     state,
@@ -3460,7 +3472,7 @@ impl AdapterImpl {
         partition_config: BigqueryPartitionConfig,
     ) -> AdapterResult<Value> {
         match self.adapter_type() {
-            Bigquery => {
+            Bigquery | Spanner => {
                 let mut result = Column::vec_from_jinja_value(Bigquery, columns.clone())?;
 
                 if result
@@ -3541,7 +3553,7 @@ impl AdapterImpl {
             Impl(Snowflake, engine) => {
                 snowflake::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
-            Impl(Bigquery, engine) => {
+            Impl(Bigquery | Spanner, engine) => {
                 bigquery::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
             Impl(Databricks | Spark, engine) => {
@@ -3638,9 +3650,9 @@ impl AdapterImpl {
 
                 Ok(Value::from(result))
             }
-            Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB | Fdcs
-            | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
-            | Oracle => {
+            Postgres | Snowflake | Bigquery | Spanner | Redshift | Salesforce | Spark | DuckDB
+            | Fdcs | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion
+            | Dremio | Oracle => {
                 unimplemented!("only available with Databricksadapter")
             }
         }
@@ -3795,9 +3807,9 @@ impl AdapterImpl {
                 Ok(path)
             }
 
-            Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB | Fdcs
-            | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
-            | Oracle => {
+            Postgres | Snowflake | Bigquery | Spanner | Redshift | Salesforce | Spark | DuckDB
+            | Fdcs | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion
+            | Dremio | Oracle => {
                 unimplemented!("only available with Databricks adapter")
             }
         }
@@ -3873,9 +3885,9 @@ impl AdapterImpl {
                 }
                 Ok(())
             }
-            Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB | Fdcs
-            | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
-            | Oracle => {
+            Postgres | Snowflake | Bigquery | Spanner | Redshift | Salesforce | Spark | DuckDB
+            | Fdcs | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion
+            | Dremio | Oracle => {
                 unimplemented!("only available with Databricks adapter")
             }
         }
@@ -3960,9 +3972,9 @@ impl AdapterImpl {
 
                 Ok(!use_managed_iceberg)
             }
-            Postgres | Snowflake | Bigquery | Redshift | Salesforce | Spark | DuckDB | Fdcs
-            | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
-            | Oracle => {
+            Postgres | Snowflake | Bigquery | Spanner | Redshift | Salesforce | Spark | DuckDB
+            | Fdcs | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion
+            | Dremio | Oracle => {
                 unimplemented!("only available with Databricks adapter")
             }
         }
@@ -4225,7 +4237,7 @@ impl AdapterImpl {
         token: CancellationToken,
     ) -> AdapterResult<()> {
         match self.adapter_type() {
-            Bigquery => {
+            Bigquery | Spanner => {
                 let append = materialization == "incremental";
                 let truncate = materialization == "table";
                 if !append && !truncate {
@@ -4479,6 +4491,8 @@ impl AdapterImpl {
     /// Get the default ADBC statement options
     pub fn get_adbc_execute_options(&self, state: &State) -> ExecuteOptions {
         match self.adapter_type() {
+            // NOTE: these are BigQuery-driver-specific statement options; the Spanner
+            // ADBC driver rejects them, so Spanner must fall through to no options.
             Bigquery => {
                 let mut options = vec![(
                     QUERY_LINK_FAILED_JOB.to_string(),
@@ -4620,7 +4634,7 @@ pub(crate) fn adapter_specific_behavior_flags(adapter_type: AdapterType) -> Vec<
                 use_managed_iceberg,
             ]
         }
-        Bigquery => {
+        Bigquery | Spanner => {
             // https://github.com/dbt-labs/dbt-adapters/blob/b9ebd240e39882a8c43ed659de423c7504d4642a/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L109-L110
             let flag = BehaviorFlag::new(
                 "bigquery_noop_alter_relation_comment",
@@ -5049,7 +5063,7 @@ mod tests {
                     ("attach".into(), attach),
                 ])
             }
-            Bigquery | Redshift | Spark | Databricks => Mapping::new(),
+            Bigquery | Spanner | Redshift | Spark | Databricks => Mapping::new(),
             _ => unimplemented!("mock config for adapter type {:?}", adapter_type),
         };
         build_engine(adapter_type, config)

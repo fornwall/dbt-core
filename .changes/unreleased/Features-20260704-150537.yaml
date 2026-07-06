@@ -1,0 +1,11 @@
+kind: Features
+body: 'Add an experimental Google Cloud Spanner adapter (GoogleSQL dialect) on the
+    adbc-spanner driver: adapter type, profile config, ADBC backend + auth, and a
+    macro package supporting view, table (primary-key required), and incremental
+    (append / delete_insert) materializations. Verified end-to-end against the
+    Spanner emulator.'
+time: 2026-07-04T15:05:37.000000+02:00
+custom:
+    author: fornwall
+    issue: ""
+    project: dbt-core

@@ -316,7 +316,7 @@ pub fn backend_name_and_version(backend: Backend) -> (&'static str, &'static str
         Backend::DuckDBExtended => ("duckdb_extended", DUCKDB_EXTENDED_DRIVER_VERSION),
         Backend::SQLServer => ("mssql", MSSQLSERVER_DRIVER_VERSION),
         Backend::ClickHouse => ("clickhouse", CLICKHOUSE_DRIVER_VERSION),
-        Backend::Athena | Backend::Exasol | Backend::Generic { .. } => {
+        Backend::Athena | Backend::Exasol | Backend::Spanner | Backend::Generic { .. } => {
             unreachable!("driver_parameters() called with backend={:?}", backend)
         }
     }

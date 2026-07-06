@@ -46,6 +46,14 @@ fn include_policy(adapter_type: AdapterType, path: &RelationPath) -> Policy {
             true,
         ),
         AdapterType::ClickHouse | AdapterType::Exasol => Policy::new(false, true, true),
+        // Spanner connects to a single database, so relation names are never
+        // qualified with the database. It also omits the unnamed/empty default
+        // schema (rendering as just the identifier), while keeping named schemas.
+        AdapterType::Spanner => Policy::new(
+            false,
+            path.schema.as_ref().is_some_and(|s| !s.is_empty()),
+            true,
+        ),
         AdapterType::Salesforce => Policy::new(false, false, true),
         _ => Policy::trues(),
     }
