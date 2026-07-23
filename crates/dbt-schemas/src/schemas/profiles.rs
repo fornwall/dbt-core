@@ -187,6 +187,7 @@ impl DbConfig {
                 "execution_project",
                 "schema",
                 "api_endpoint",
+                "storage_endpoint",
                 "location",
                 "priority",
                 "maximum_bytes_billed",
@@ -817,6 +818,13 @@ pub struct BigqueryDbConfig {
     pub execution_project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_endpoint: Option<String>,
+    /// Endpoint override for the BigQuery Storage Read API (gRPC), e.g.
+    /// `localhost:9060`. Requires an ADBC BigQuery driver with
+    /// `adbc.bigquery.sql.storage_endpoint` support
+    /// (adbc-drivers/bigquery#214); older drivers reject the option at
+    /// connection time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compute_region: Option<String>,
     // TODO: support this https://docs.getdbt.com/docs/core/connect-data-platform/bigquery-setup

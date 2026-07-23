@@ -2,6 +2,12 @@
 
 pub const AUTH_TYPE: &str = "adbc.bigquery.sql.auth_type";
 pub const API_ENDPOINT: &str = "adbc.bigquery.sql.api_endpoint";
+// Database-scope override for the BigQuery Storage Read API (gRPC) endpoint,
+// added to the driver by adbc-drivers/bigquery#214 (and kept as a legacy
+// alias of `bigquery.storage_endpoint` after the #215 rename). The drivers
+// bundled up to 0.21.0.dev+dbt0.21.15 predate it and reject the option at
+// connection time.
+pub const STORAGE_ENDPOINT: &str = "adbc.bigquery.sql.storage_endpoint";
 pub const LOCATION: &str = "adbc.bigquery.sql.location";
 pub const PROJECT_ID: &str = "adbc.bigquery.sql.project_id";
 pub const DATASET_ID: &str = "adbc.bigquery.sql.dataset_id";
