@@ -1,11 +1,13 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use adbc_core::options::{OptionStatement, OptionValue};
 use arrow::array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef};
 use datafusion_expr::LogicalPlan;
 use dbt_adapter_core::AdapterType;
 use dbt_adbc::Connection;
+use dbt_adbc::bigquery::QUERY_USE_STORAGE_API_DISABLED_CLIENT;
 use dbt_common::hashing::code_hash;
 use dbt_common::tracing::span_info::record_current_span_status_from_attrs;
 use dbt_common::{ErrorCode, FsError, FsResult, create_debug_span, err, fs_err};
@@ -53,12 +55,12 @@ async fn run_remote_adhoc_with_connection(
         return result;
     }
 
+    let adapter_engine = env.get_base_adapter().map(|a| Arc::clone(a.engine()));
     let conn = {
         if let Some(conn) = conn_box {
             conn.as_mut()
         } else {
-            let adapter_engine = env.get_base_adapter().map(|a| Arc::clone(a.engine()));
-            let Some(engine) = adapter_engine else {
+            let Some(engine) = &adapter_engine else {
                 return err!(
                     ErrorCode::RemoteError,
                     "No adapter engine configured in workspace"
@@ -84,6 +86,15 @@ async fn run_remote_adhoc_with_connection(
         },
     };
     let mut stmt = conn.new_statement().map_err(from_adbc_error)?;
+    if let Some(engine) = &adapter_engine
+        && engine.bigquery_disable_storage_api()
+    {
+        stmt.set_option(
+            OptionStatement::Other(QUERY_USE_STORAGE_API_DISABLED_CLIENT.to_string()),
+            OptionValue::String("true".to_string()),
+        )
+        .map_err(from_adbc_error)?;
+    }
     stmt.set_sql_query(rendered_sql).map_err(from_adbc_error)?;
 
     let (schema, mut reader) = {

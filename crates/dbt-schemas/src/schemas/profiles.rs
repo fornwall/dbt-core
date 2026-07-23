@@ -187,6 +187,7 @@ impl DbConfig {
                 "execution_project",
                 "schema",
                 "api_endpoint",
+                "disable_storage_api",
                 "location",
                 "priority",
                 "maximum_bytes_billed",
@@ -817,6 +818,11 @@ pub struct BigqueryDbConfig {
     pub execution_project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_endpoint: Option<String>,
+    /// When true, query results are read over the BigQuery REST API instead
+    /// of the Storage Read API (gRPC). Useful behind proxies or against
+    /// emulators that only implement the REST surface.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disable_storage_api: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compute_region: Option<String>,
     // TODO: support this https://docs.getdbt.com/docs/core/connect-data-platform/bigquery-setup
