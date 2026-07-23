@@ -127,6 +127,7 @@ pub fn setup_bigquery_profile(
         keyfile_json: None,
         execution_project: None,
         api_endpoint: None,
+        storage_endpoint: None,
         compute_region: None,
         dataproc_batch: None,
         dataproc_cluster_name: None,

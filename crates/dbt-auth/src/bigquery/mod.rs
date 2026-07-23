@@ -330,6 +330,13 @@ fn apply_connection_args(
         builder.with_named_option(bigquery::API_ENDPOINT, api_endpoint)?;
     }
 
+    // The Storage Read API endpoint is a gRPC "host:port" (no scheme), unlike
+    // `api_endpoint` which is a REST base URL, so it is forwarded verbatim:
+    // the driver hands it to the client library's `WithEndpoint` unmodified.
+    if let Some(storage_endpoint) = config.get_str("storage_endpoint") {
+        builder.with_named_option(bigquery::STORAGE_ENDPOINT, storage_endpoint)?;
+    }
+
     if let Some(location) = config.get_str("location") {
         builder.with_named_option(bigquery::LOCATION, location)?;
     }
@@ -524,6 +531,24 @@ mod tests {
                 panic!("Auth config mapping failed with error: {err:?}")
             }
         }
+    }
+
+    #[test]
+    fn test_storage_endpoint_is_forwarded() {
+        let mut config = base_config_keyfile_json();
+        config.insert("storage_endpoint".into(), "localhost:9060".into());
+        let builder = try_configure(config).unwrap();
+        assert_eq!(
+            other_option_value(&builder, bigquery::STORAGE_ENDPOINT).unwrap(),
+            "localhost:9060"
+        );
+    }
+
+    #[test]
+    fn test_storage_endpoint_absent_by_default() {
+        let config = base_config_keyfile_json();
+        let builder = try_configure(config).unwrap();
+        assert!(other_option_value(&builder, bigquery::STORAGE_ENDPOINT).is_none());
     }
 
     #[test]
