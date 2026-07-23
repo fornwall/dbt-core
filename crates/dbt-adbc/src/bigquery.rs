@@ -77,6 +77,13 @@ pub const QUERY_PREFETCH_CONCURRENCY: &str = "adbc.bigquery.sql.query.prefetch_c
 
 pub const QUERY_LINK_FAILED_JOB: &str = "adbc.bigquery.sql.query.link_failed_job";
 
+// Statement-scope option: read query results with a client that has the
+// BigQuery Storage Read API disabled, so rows come back over the REST API
+// instead of gRPC. The driver only accepts this option on statements, not on
+// the database/connection.
+pub const QUERY_USE_STORAGE_API_DISABLED_CLIENT: &str =
+    "adbc.bigquery.sql.query.use_storage_api_disabled_client"; // bool
+
 // values
 pub const DEFAULT_QUERY_RESULT_BUFFER_SIZE: i64 = 200;
 pub const DEFAULT_QUERY_PREFETCH_CONCURRENCY: i64 = 10;

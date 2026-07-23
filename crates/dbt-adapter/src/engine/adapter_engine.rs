@@ -7,7 +7,7 @@ use arrow::compute::concat_batches;
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use dbt_adapter_sql::statements::is_update_statement;
-use dbt_adbc::bigquery::QUERY_LABELS;
+use dbt_adbc::bigquery::{QUERY_LABELS, QUERY_USE_STORAGE_API_DISABLED_CLIENT};
 use dbt_adbc::{Backend, Connection, QueryCtx, Statement};
 use dbt_auth::AdapterConfig;
 use dbt_common::behavior_flags::Behavior;
@@ -145,6 +145,18 @@ pub trait AdapterEngine: Send + Sync {
         false
     }
 
+    /// Whether the profile-level `disable_storage_api` flag asks BigQuery
+    /// query results to be read over REST instead of the Storage Read API.
+    ///
+    /// The driver only accepts the corresponding option
+    /// ([QUERY_USE_STORAGE_API_DISABLED_CLIENT]) at statement scope, so every
+    /// site that creates statements directly must consult this and set the
+    /// option itself.
+    fn bigquery_disable_storage_api(&self) -> bool {
+        self.adapter_type() == AdapterType::Bigquery
+            && is_truthy_profile_flag(self.config("disable_storage_api").as_deref())
+    }
+
     /// Whether this is a sidecar engine (subprocess-based execution)
     fn is_sidecar(&self) -> bool {
         false
@@ -246,6 +258,20 @@ pub(crate) fn adbc_execute_with_options(
         options.push((
             QUERY_LABELS.to_owned(),
             OptionValue::String(job_label_option),
+        ));
+    }
+    if engine.bigquery_disable_storage_api()
+        && !options
+            .iter()
+            .any(|(key, _)| key == QUERY_USE_STORAGE_API_DISABLED_CLIENT)
+    {
+        // The driver only accepts this option at statement scope, so a
+        // profile-level `disable_storage_api: true` is applied to every
+        // statement here. An explicit per-statement setting (e.g. from the
+        // insert_overwrite macro) takes precedence.
+        options.push((
+            QUERY_USE_STORAGE_API_DISABLED_CLIENT.to_owned(),
+            OptionValue::String("true".to_owned()),
         ));
     }
 
@@ -406,4 +432,28 @@ pub(crate) fn adbc_execute_with_options(
     });
 
     Ok(total_batch)
+}
+
+/// Interpret a profile-level boolean flag rendered to text by
+/// [AdapterConfig::get_string]: a YAML `true` renders as "true", but accept
+/// the common string spellings too.
+fn is_truthy_profile_flag(value: Option<&str>) -> bool {
+    matches!(value, Some("true") | Some("True") | Some("1"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_truthy_profile_flag() {
+        assert!(is_truthy_profile_flag(Some("true")));
+        assert!(is_truthy_profile_flag(Some("True")));
+        assert!(is_truthy_profile_flag(Some("1")));
+        assert!(!is_truthy_profile_flag(Some("false")));
+        assert!(!is_truthy_profile_flag(Some("False")));
+        assert!(!is_truthy_profile_flag(Some("0")));
+        assert!(!is_truthy_profile_flag(Some("")));
+        assert!(!is_truthy_profile_flag(None));
+    }
 }
