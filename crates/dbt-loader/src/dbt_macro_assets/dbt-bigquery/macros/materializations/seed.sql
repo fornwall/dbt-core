@@ -27,11 +27,12 @@
   {%- set column_override = model['config'].get('column_types', {}) -%}
   {%- set delimiter = model['config'].get('delimiter', ',') -%}
   {% if dbt_version.startswith('2.') %}
+    {%- set seed_file_path = adapter.get_seed_file_path(model) -%}
     {{ adapter.load_dataframe(
         model['database'],
         model['schema'],
         model['alias'],
-        model['project_root'] | string ~ model['original_file_path'] | string,
+        seed_file_path,
         agate_table,
         column_override,
         delimiter,

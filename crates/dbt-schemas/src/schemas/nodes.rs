@@ -5022,6 +5022,21 @@ pub struct DbtSeedAttr {
     pub catalog_name: Option<String>,
 }
 
+impl DbtSeed {
+    /// Resolves the data file for a resolver-built seed as `root_path.join(path)`.
+    /// Errors if `root_path` is unset.
+    pub fn resolve_file_path(&self) -> FsResult<PathBuf> {
+        match self.__seed_attr__.root_path.as_ref() {
+            Some(root) => Ok(root.join(&self.__common_attr__.path)),
+            None => err!(
+                ErrorCode::InvalidPath,
+                "Seed '{}' was built without a package root",
+                self.__common_attr__.unique_id
+            ),
+        }
+    }
+}
+
 fn is_false(b: &bool) -> bool {
     !b
 }
@@ -6575,6 +6590,26 @@ mod tests {
         seed.__common_attr__.original_file_path = DbtPath::from(original_file_path);
         seed.__base_attr__.alias = name.to_string();
         seed
+    }
+
+    #[test]
+    fn seed_resolve_file_path_joins_package_root() {
+        let in_dir = Path::new("/workspace");
+
+        let mut seed = seed_with_paths("my_seed", "seeds/my_seed.csv");
+        seed.__seed_attr__.root_path = Some(in_dir.join("dbt_packages/pkg"));
+        seed.__common_attr__.original_file_path =
+            DbtPath::from("dbt_packages/pkg/seeds/my_seed.csv");
+        assert_eq!(
+            seed.resolve_file_path().unwrap(),
+            in_dir.join("dbt_packages/pkg/seeds/my_seed.csv")
+        );
+
+        assert!(
+            seed_with_paths("my_seed", "seeds/my_seed.csv")
+                .resolve_file_path()
+                .is_err()
+        );
     }
 
     #[test]

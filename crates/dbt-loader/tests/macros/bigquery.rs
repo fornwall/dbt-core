@@ -8,7 +8,7 @@ use dbt_jinja_utils::mock_object::MockJinjaObject;
 use dbt_schemas::dbt_types::RelationType;
 use minijinja::Value;
 
-use crate::macro_test_harness::MacroTestHarness;
+use crate::macro_test_harness::{MacroTestHarness, default_mock_config};
 
 fn build_harness() -> MacroTestHarness {
     MacroTestHarness::for_adapter(AdapterType::Bigquery)
@@ -16,6 +16,60 @@ fn build_harness() -> MacroTestHarness {
         .with_stub_functions()
         .build()
         .expect("harness should build")
+}
+
+#[test]
+fn load_csv_rows_forwards_seed_path_from_adapter() {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Bigquery)
+        .load_all_macros()
+        .with_stub_functions()
+        .with_macro(
+            "test_project",
+            "statement",
+            "{% macro statement(name=none, fetch_result=false, auto_begin=true, language='sql') %}{% endmacro %}",
+        )
+        .build()
+        .expect("harness should build");
+    harness.mock().on("get_seed_file_path", |_| {
+        Ok(Value::from("/workspace/seeds/countries.csv"))
+    });
+    harness
+        .mock()
+        .on("load_dataframe", |_| Ok(Value::UNDEFINED));
+
+    let model = Value::from_serialize(BTreeMap::from([
+        ("database", Value::from("test-db")),
+        ("schema", Value::from("test_schema")),
+        ("alias", Value::from("countries")),
+        (
+            "config",
+            Value::from_serialize(BTreeMap::<String, Value>::new()),
+        ),
+    ]));
+    let ctx = BTreeMap::from([
+        ("model".to_string(), model),
+        ("agate_table".to_string(), Value::from("agate table")),
+        ("dbt_version".to_string(), Value::from("2.0.0")),
+        (
+            "config".to_string(),
+            Value::from_dyn_object(default_mock_config()),
+        ),
+    ]);
+
+    harness
+        .render("{{ bigquery__load_csv_rows(model, agate_table) }}", ctx)
+        .expect("seed load macro should render");
+
+    let calls = harness.mock().observed_calls();
+    assert_eq!(calls.to("get_seed_file_path").count(), 1);
+    let load_call = calls
+        .to("load_dataframe")
+        .next()
+        .expect("load_dataframe should be called");
+    assert_eq!(
+        load_call.args.get(3).and_then(Value::as_str),
+        Some("/workspace/seeds/countries.csv")
+    );
 }
 
 fn base_relation_ctx(harness: &MacroTestHarness) -> BTreeMap<String, Value> {
