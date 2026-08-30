@@ -1,4 +1,6 @@
 use dbt_adapter_core::AdapterType;
+use dbt_cloud_api::models::SchemasAdaptersBigqueryV0ConnectionSchemaPriority as CloudPriority;
+use dbt_cloud_api::models::SchemasAdaptersBigqueryV1ConnectionSchemaPriority as CloudPriorityV1;
 use dbt_cloud_api::{
     apis::{configuration::Configuration, connections_api, users_api, whoami_api},
     models,
@@ -8,8 +10,8 @@ use dbt_common::tracing::dbt_emit::{
 };
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::profiles::{
-    BigqueryDbConfig, DatabricksDbConfig, DbConfig, PostgresDbConfig, RedshiftDbConfig,
-    SnowflakeDbConfig,
+    BigqueryDbConfig, BigqueryPriority, DatabricksDbConfig, DbConfig, PostgresDbConfig,
+    RedshiftDbConfig, SnowflakeDbConfig,
 };
 use dbt_schemas::schemas::serde::StringOrInteger;
 
@@ -264,7 +266,10 @@ fn create_merged_db_config(
                         None
                     },
                     timeout_seconds: Some(bigquery.timeout_seconds as i64),
-                    priority: bigquery.priority.as_ref().map(|p| format!("{p:?}")),
+                    priority: bigquery.priority.map(|p| match p {
+                        CloudPriority::Batch => BigqueryPriority::Batch,
+                        CloudPriority::Interactive => BigqueryPriority::Interactive,
+                    }),
                     location: bigquery.location.clone(),
                     maximum_bytes_billed: bigquery.maximum_bytes_billed.map(|mb| mb as i64),
                     execution_project: bigquery.execution_project.clone(),
@@ -321,7 +326,10 @@ fn create_merged_db_config(
                         .map(|t| t as i64),
                     // V1 Cloud API has no reservation field
                     reservation: None,
-                    priority: bigquery_v1.priority.as_ref().map(|p| format!("{p:?}")),
+                    priority: bigquery_v1.priority.map(|p| match p {
+                        CloudPriorityV1::Batch => BigqueryPriority::Batch,
+                        CloudPriorityV1::Interactive => BigqueryPriority::Interactive,
+                    }),
                     location: bigquery_v1.location.clone(),
                     maximum_bytes_billed: bigquery_v1.maximum_bytes_billed.map(|mb| mb as i64),
                     execution_project: bigquery_v1.execution_project.clone(),
