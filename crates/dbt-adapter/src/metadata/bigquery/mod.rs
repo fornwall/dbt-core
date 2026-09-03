@@ -25,6 +25,7 @@ use dbt_schemas::schemas::common::normalize_quote;
 use dbt_schemas::schemas::dbt_column::DbtColumn;
 use dbt_schemas::schemas::legacy_catalog::*;
 use dbt_schemas::schemas::relations::base::*;
+use dbt_schemas::schemas::serde::StringOrMap;
 use indexmap::IndexMap;
 use minijinja::State;
 
@@ -388,6 +389,41 @@ impl TrieNode {
         }
         result.join(", ")
     }
+}
+
+pub(crate) fn build_column_metadata_maps(
+    columns: &IndexMap<String, DbtColumn>,
+) -> (BTreeMap<String, String>, BTreeMap<String, Vec<String>>) {
+    let column_to_description = columns
+        .iter()
+        .filter_map(|(name, col)| {
+            col.description
+                .as_ref()
+                .map(|description| (name.clone(), description.clone()))
+        })
+        .collect();
+
+    // BigQuery policy tags are taxonomy resource-path strings, so mapping entries (e.g.
+    // Snowflake masking-policy config) are dropped rather than sent to the REST API. If a
+    // column's tags are all mapping-valued, omit it entirely rather than sending an empty list,
+    // which BigQuery would interpret as clearing any existing policy tags on that column.
+    let column_to_policy_tags = columns
+        .iter()
+        .filter_map(|(name, col)| {
+            col.policy_tags.as_ref().and_then(|tags| {
+                let string_tags = tags
+                    .iter()
+                    .filter_map(|tag| match tag {
+                        StringOrMap::StringValue(s) => Some(s.clone()),
+                        StringOrMap::MapValue(_) => None,
+                    })
+                    .collect::<Vec<_>>();
+                (!string_tags.is_empty()).then(|| (name.clone(), string_tags))
+            })
+        })
+        .collect();
+
+    (column_to_description, column_to_policy_tags)
 }
 
 /// Collapses dotted-path nested columns like `{"b.nested": ..., "b.nested2": ...}` into a
@@ -1752,6 +1788,55 @@ fn is_bigquery_permission_error(e: &AdapterError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn column_metadata_maps_preserve_nested_field_paths() {
+        let columns = IndexMap::from([
+            (
+                "customer".to_string(),
+                DbtColumn {
+                    name: "customer".to_string(),
+                    description: Some("Customer record".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "customer.email".to_string(),
+                DbtColumn {
+                    name: "customer.email".to_string(),
+                    description: Some("Customer email".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "customer.ssn".to_string(),
+                DbtColumn {
+                    name: "customer.ssn".to_string(),
+                    policy_tags: Some(vec![StringOrMap::StringValue(
+                        "projects/p/locations/eu/taxonomies/t/policyTags/pii".to_string(),
+                    )]),
+                    ..Default::default()
+                },
+            ),
+        ]);
+
+        let (descriptions, policy_tags) = build_column_metadata_maps(&columns);
+
+        assert_eq!(
+            descriptions,
+            BTreeMap::from([
+                ("customer".to_string(), "Customer record".to_string()),
+                ("customer.email".to_string(), "Customer email".to_string()),
+            ])
+        );
+        assert_eq!(
+            policy_tags,
+            BTreeMap::from([(
+                "customer.ssn".to_string(),
+                vec!["projects/p/locations/eu/taxonomies/t/policyTags/pii".to_string()],
+            )])
+        );
+    }
 
     fn bq_rel(project: &str, dataset: &str, table: &str) -> Arc<dyn BaseRelation> {
         use crate::relation::Relation;

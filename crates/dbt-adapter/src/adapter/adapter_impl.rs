@@ -15,7 +15,8 @@ use crate::macro_exec::{
 };
 use crate::metadata::bigquery::nested_projection::render_struct_projection;
 use crate::metadata::bigquery::{
-    BIGQUERY_PSEUDOCOLUMNS, BigqueryMetadataAdapter, nest_column_data_types,
+    BIGQUERY_PSEUDOCOLUMNS, BigqueryMetadataAdapter, build_column_metadata_maps,
+    nest_column_data_types,
 };
 use crate::metadata::clickhouse::ClickHouseMetadataAdapter;
 use crate::metadata::databricks::DatabricksMetadataAdapter;
@@ -74,7 +75,7 @@ use dbt_schemas::schemas::profiles::DuckDBPathInfo;
 use dbt_schemas::schemas::project::ModelConfig;
 use dbt_schemas::schemas::properties::ModelConstraint;
 use dbt_schemas::schemas::relations::base::{BaseRelation, ComponentName, Policy};
-use dbt_schemas::schemas::serde::{StringOrMap, minijinja_value_to_typed_struct};
+use dbt_schemas::schemas::serde::minijinja_value_to_typed_struct;
 use dbt_schemas::schemas::{CommonAttributes, InternalDbtNodeAttributes, InternalDbtNodeWrapper};
 use dbt_yaml::Value as YmlValue;
 use indexmap::IndexMap;
@@ -2887,36 +2888,11 @@ impl AdapterImpl {
                 let table = relation.identifier_as_str()?;
                 let schema = relation.schema_as_str()?;
 
-                let nested_columns = self.do_nest_column_data_types(columns, None)?;
-
-                let column_to_description = nested_columns
-                    .iter()
-                    .filter_map(|(name, col)| {
-                        col.description
-                            .as_ref()
-                            .map(|desc| (name.to_string(), desc.to_string()))
-                    })
-                    .collect::<BTreeMap<String, String>>();
-
-                // BigQuery policy tags are taxonomy resource-path strings, so mapping entries (e.g. Snowflake masking-policy config) are dropped here rather than sent to the REST API.
-                // If a column's tags are all mapping-valued, omit it entirely rather than
-                // sending an empty list, which BigQuery would interpret as clearing any
-                // existing policy tags on that column.
-                let column_to_policy_tags = nested_columns
-                    .iter()
-                    .filter_map(|(name, col)| {
-                        col.policy_tags.as_ref().and_then(|tags| {
-                            let string_tags = tags
-                                .iter()
-                                .filter_map(|tag| match tag {
-                                    StringOrMap::StringValue(s) => Some(s.clone()),
-                                    StringOrMap::MapValue(_) => None,
-                                })
-                                .collect::<Vec<String>>();
-                            (!string_tags.is_empty()).then(|| (name.to_string(), string_tags))
-                        })
-                    })
-                    .collect::<BTreeMap<String, Vec<String>>>();
+                // The keys are already dotted paths for nested STRUCT fields. Do not run them
+                // through `nest_column_data_types`: that helper deliberately collapses paths to
+                // top-level columns for DDL rendering and discards leaf metadata.
+                let (column_to_description, column_to_policy_tags) =
+                    build_column_metadata_maps(&columns);
 
                 // Skip the ADBC round-trip (and its ETag-race exposure) when
                 // there is nothing to update. Matches dbt-core Python's
