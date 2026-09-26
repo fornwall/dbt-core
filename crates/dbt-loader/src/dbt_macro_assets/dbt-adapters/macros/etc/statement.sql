@@ -29,8 +29,8 @@ The macro override naming method (spark__statement) only works for macros which 
 
 
 -- ai
--- funcsign: (optional[string], optional[string], optional[string], optional[string], optional[agate_table]) -> string
-{% macro noop_statement(name=None, message=None, code=None, rows_affected=None, res=None) -%}
+-- funcsign: (optional[string], optional[string], optional[string], optional[string], optional[agate_table], optional[any]) -> string
+{% macro noop_statement(name=None, message=None, code=None, rows_affected=None, res=None, response=None) -%}
   {%- set sql = caller() -%}
 
   {%- if name == 'main' -%}
@@ -39,7 +39,13 @@ The macro override naming method (spark__statement) only works for macros which 
   {%- endif -%}
 
   {%- if name is not none -%}
-    {{ store_raw_result(name, message=message, code=code, rows_affected=rows_affected, agate_table=res) }}
+    {# Omit the new keyword when absent for compatibility with Python's store_raw_result:
+       https://github.com/dbt-labs/dbt-core/blob/34bb3f94dde716a3f9c36481d2ead85c211075dd/core/dbt/context/providers.py #}
+    {% if response is not none %}
+      {{ store_raw_result(name, message=message, code=code, rows_affected=rows_affected, agate_table=res, response=response) }}
+    {% else %}
+      {{ store_raw_result(name, message=message, code=code, rows_affected=rows_affected, agate_table=res) }}
+    {% endif %}
   {%- endif -%}
 
 {%- endmacro %}

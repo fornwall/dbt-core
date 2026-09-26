@@ -3567,7 +3567,7 @@ impl AdapterImpl {
         column_overrides: IndexMap<String, String>,
         field_delimiter: &str,
         token: CancellationToken,
-    ) -> AdapterResult<Value> {
+    ) -> AdapterResult<AdapterResponse> {
         match self.adapter_type() {
             Bigquery => {
                 // https://github.com/dbt-labs/dbt-adapters/blob/4b3966efc50b1d013907a88bee4ab8ebd022d17a/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L668
@@ -3591,7 +3591,7 @@ impl AdapterImpl {
                     Ok(buf) as AdapterResult<Vec<u8>>
                 }?;
 
-                self.engine().execute_with_options(
+                let batch = self.engine().execute_with_options(
                     None,
                     ctx,
                     conn,
@@ -3618,7 +3618,10 @@ impl AdapterImpl {
                     token,
                 )?;
 
-                Ok(none_value())
+                Ok(
+                    AdapterResponse::from_record_batch(&batch, self.adapter_type())
+                        .with_connection_info(self.adapter_type(), self.engine().as_ref()),
+                )
             }
             Salesforce => todo!("load_dataframe() for the Salesforce adapter"),
             Postgres | Snowflake | Databricks | Redshift | Spark | DuckDB | LakeCompute
@@ -4928,11 +4931,12 @@ impl AdapterImpl {
         dest: &Arc<dyn BaseRelation>,
         materialization: String,
         token: CancellationToken,
-    ) -> AdapterResult<()> {
+    ) -> AdapterResult<AdapterResponse> {
         match self.adapter_type() {
             Bigquery => {
                 if let Replay(_, replay) = self.inner_adapter() {
-                    return replay.replay_copy_table(state, source, dest, &materialization);
+                    replay.replay_copy_table(state, source, dest, &materialization)?;
+                    return Ok(AdapterResponse::default());
                 }
                 let append = materialization == "incremental";
                 let truncate = materialization == "table";
@@ -4982,7 +4986,7 @@ impl AdapterImpl {
                 ]);
 
                 let ctx = query_ctx_from_state(state)?.with_desc("copy_table adapter call");
-                self.engine().execute_with_options(
+                let batch = self.engine().execute_with_options(
                     Some(state),
                     &ctx,
                     conn,
@@ -4992,7 +4996,10 @@ impl AdapterImpl {
                     token,
                 )?;
 
-                Ok(())
+                Ok(
+                    AdapterResponse::from_record_batch(&batch, self.adapter_type())
+                        .with_connection_info(self.adapter_type(), self.engine().as_ref()),
+                )
             }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino

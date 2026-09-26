@@ -27,7 +27,7 @@
   {%- set column_override = model['config'].get('column_types', {}) -%}
   {%- set delimiter = model['config'].get('delimiter', ',') -%}
   {% if dbt_version.startswith('2.') %}
-    {{ adapter.load_dataframe(
+    {% set response = adapter.load_dataframe(
         model['database'],
         model['schema'],
         model['alias'],
@@ -35,7 +35,10 @@
         agate_table,
         column_override,
         delimiter,
-    ) }}
+    ) %}
+    {% if response is not none %}
+      {% do store_result('seed_load', response=response) %}
+    {% endif %}
   {% else %}
     {{ adapter.load_dataframe(
         model['database'],

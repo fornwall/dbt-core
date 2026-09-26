@@ -162,6 +162,12 @@
       {{ build_sql }}
     {% endcall %}
 
+    {# The main SQL only cleans up after copy_partitions; report the final copy job. #}
+    {% set copy_result = load_result('copy_partitions') %}
+    {% if copy_result is not none %}
+      {% do store_result('main', response=copy_result.response) %}
+    {% endif %}
+
   {% endif %}
 
   {{ run_hooks(post_hooks) }}
