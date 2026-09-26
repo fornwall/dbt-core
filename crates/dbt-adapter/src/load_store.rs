@@ -146,6 +146,14 @@ impl ResultStore {
                 iter.next_kwarg::<Option<String>>("rows_affected")?;
             let agate_table: Option<Value> = iter.next_kwarg::<Option<Value>>("agate_table")?;
 
+            let response: Option<Value> = iter.next_kwarg::<Option<Value>>("response")?;
+            let response = match response {
+                Some(response) if !response.is_introspective_stub() => {
+                    AdapterResponse::try_from(response)?
+                }
+                _ => AdapterResponse::default(),
+            };
+
             // Parse rows_affected only if string value is present and valid
             let rows_affected = if let Some(rows_affected) = rows_affected
                 && let Some(rows) = rows_affected.parse::<i64>().ok()
@@ -164,7 +172,7 @@ impl ResultStore {
             };
 
             // Create adapter response (keep original semantics: default to 0 if not present)
-            let response = AdapterResponse::new()
+            let response = response
                 .with_message(message.unwrap_or_default())
                 .with_code(code.unwrap_or_default())
                 .with_rows_affected(rows_affected);
@@ -245,6 +253,47 @@ mod tests {
         // batch B loads its own (still-present) result, not A's consumed one.
         let v = load_named(&batch_b, "get_columns_in_relation").unwrap();
         assert!(!v.is_none());
+    }
+
+    #[test]
+    fn store_raw_result_preserves_job_metadata_with_seed_status() {
+        let store = ResultStore::default();
+        let response = AdapterResponse::new()
+            .with_code("LOAD")
+            .with_rows_affected(99)
+            .with_query_id("load-job")
+            .with("job_id", "load-job")
+            .with("project_id", "billing-project");
+        store.store_raw_result()(&[Value::from(Kwargs::from_iter([
+            ("name", Value::from("main")),
+            ("message", Value::from("INSERT 2")),
+            ("code", Value::from("INSERT")),
+            ("rows_affected", Value::from(2)),
+            ("response", Value::from_object(response)),
+        ]))])
+        .unwrap();
+
+        let response = store.main_adapter_response().unwrap();
+        assert_eq!(response.message(), "INSERT 2");
+        assert_eq!(response.code(), "INSERT");
+        assert_eq!(response.rows_affected(), 2);
+        assert_eq!(response.query_id().as_deref(), Some("load-job"));
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["job_id"], "load-job");
+        assert_eq!(json["project_id"], "billing-project");
+    }
+
+    #[test]
+    fn store_raw_result_with_tainted_response_does_not_panic() {
+        use crate::introspective_taint::IntrospectiveValue;
+
+        let store = ResultStore::default();
+        store.store_raw_result()(&[Value::from(Kwargs::from_iter([
+            ("name", Value::from("main")),
+            ("response", IntrospectiveValue::wrap(Value::from("ok"))),
+        ]))])
+        .unwrap();
+        assert!(store.main_adapter_response().unwrap().query_id().is_none());
     }
 
     /// Regression test: under `JinjaRenderMode::Symbolic`, `{% set res, table

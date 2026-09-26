@@ -36,7 +36,9 @@
     {% set sql = load_csv_rows(model, agate_table) %}
   {% endif %}
 
-  {% call noop_statement('main', code ~ ' ' ~ rows_affected, code, rows_affected) %} -- noqa: Should accept a string instead of a integer
+  {% set seed_result = load_result('seed_load') %}
+  {% set seed_response = seed_result.response if seed_result is not none else none %}
+  {% call noop_statement('main', code ~ ' ' ~ rows_affected, code, rows_affected, response=seed_response) %} -- noqa: Should accept a string instead of a integer
     {{ get_csv_sql(create_table_sql, sql) }};
   {% endcall %}
 

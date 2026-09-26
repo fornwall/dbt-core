@@ -32,7 +32,10 @@
     {% endif %}
     {% set tmp_relation_partitioned = api.Relation.create(database=tmp_relation.database, schema=tmp_relation.schema, identifier=tmp_relation.table ~ '$' ~ partition, type=tmp_relation.type) %}
     {% set target_relation_partitioned = api.Relation.create(database=target_relation.database, schema=target_relation.schema, identifier=target_relation.table ~ '$' ~ partition, type=target_relation.type) %}
-    {% do adapter.copy_table(tmp_relation_partitioned, target_relation_partitioned, "table") %}
+    {% set response = adapter.copy_table(tmp_relation_partitioned, target_relation_partitioned, "table") %}
+    {% if response is not none %}
+      {% do store_result('copy_partitions', response=response) %}
+    {% endif %}
   {% endfor %}
 
 {% endmacro %}

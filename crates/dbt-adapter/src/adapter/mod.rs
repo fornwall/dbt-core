@@ -3056,7 +3056,7 @@ impl Adapter {
 
                 let mut conn =
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
-                adapter.copy_table(
+                let response = adapter.copy_table(
                     state,
                     conn.as_mut(),
                     &tmp_relation_partitioned,
@@ -3064,7 +3064,7 @@ impl Adapter {
                     materialization.to_string(),
                     self.cancellation_token.clone(),
                 )?;
-                Ok(none_value())
+                Ok(Value::from_object(response))
             }
             Parse(_) => Ok(none_value()),
         }
@@ -3815,7 +3815,7 @@ impl Adapter {
                     field_delimiter,
                     self.cancellation_token.clone(),
                 )?;
-                Ok(result)
+                Ok(Value::from_object(result))
             }
             Parse(_) => Ok(none_value()),
         }
