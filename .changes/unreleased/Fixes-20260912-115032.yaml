@@ -1,0 +1,7 @@
+kind: Fixes
+body: Compare unit test results independently of row order while preserving duplicate row counts.
+time: 2026-09-12T11:50:32.492749075+02:00
+custom:
+    author: fornwall
+    issue: ""
+    project: dbt-core
