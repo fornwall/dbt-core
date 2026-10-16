@@ -1,7 +1,7 @@
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use itertools::{EitherOrBoth, Itertools};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
@@ -15,11 +15,13 @@ use arrow::array::{Date32Array, Float32Array};
 use arrow::{
     self,
     array::{
-        Array, ArrayRef, BooleanArray, Decimal128Array, Float64Array, Int32Array, Int64Array,
-        RecordBatch, StringArray, TimestampNanosecondArray, TimestampSecondArray,
+        Array, ArrayRef, AsArray, BooleanArray, Decimal128Array, Float64Array, Int32Array,
+        Int64Array, RecordBatch, RecordBatchOptions, StringArray, TimestampNanosecondArray,
+        TimestampSecondArray, downcast_dictionary_array, downcast_run_array,
     },
     compute::{CastOptions, cast_with_options},
     datatypes::{DataType, Field, Schema, TimeUnit},
+    row::{RowConverter, SortField},
     util::pretty::{pretty_format_batches, print_batches},
 };
 use chrono::DateTime;
@@ -1728,6 +1730,116 @@ fn normalize_to_utf8(batch: &RecordBatch) -> arrow::error::Result<RecordBatch> {
     RecordBatch::try_new(new_schema, columns)
 }
 
+// Arrow compares Map entries positionally. Recurse through containers so maps
+// compare as multisets of key/value pairs while lists retain their element order.
+fn comparison_arrays_equal(left: &dyn Array, right: &dyn Array) -> bool {
+    if left.data_type() != right.data_type() || left.len() != right.len() {
+        return false;
+    }
+    if !left.data_type().is_nested()
+        && !matches!(
+            left.data_type(),
+            DataType::Dictionary(_, _) | DataType::RunEndEncoded(_, _)
+        )
+    {
+        return left == right;
+    }
+
+    let left_nulls = left.logical_nulls();
+    let right_nulls = right.logical_nulls();
+    (0..left.len()).all(|index| {
+        let left_null = left_nulls
+            .as_ref()
+            .is_some_and(|nulls| nulls.is_null(index));
+        let right_null = right_nulls
+            .as_ref()
+            .is_some_and(|nulls| nulls.is_null(index));
+        if left_null || right_null {
+            return left_null == right_null;
+        }
+        match left.data_type() {
+            DataType::Map(_, _) => {
+                let left = left.as_map().value(index);
+                let right = right.as_map().value(index);
+                if left.len() != right.len() {
+                    return false;
+                }
+                let mut unmatched: Vec<_> = (0..right.len()).collect();
+                (0..left.len()).all(|entry| {
+                    let position = unmatched.iter().position(|&candidate| {
+                        comparison_arrays_equal(&left.slice(entry, 1), &right.slice(candidate, 1))
+                    });
+                    if let Some(position) = position {
+                        unmatched.swap_remove(position);
+                        true
+                    } else {
+                        false
+                    }
+                })
+            }
+            DataType::Struct(_) => left
+                .as_struct()
+                .columns()
+                .iter()
+                .zip(right.as_struct().columns())
+                .all(|(left, right)| {
+                    comparison_arrays_equal(
+                        left.slice(index, 1).as_ref(),
+                        right.slice(index, 1).as_ref(),
+                    )
+                }),
+            DataType::List(_) => comparison_arrays_equal(
+                left.as_list::<i32>().value(index).as_ref(),
+                right.as_list::<i32>().value(index).as_ref(),
+            ),
+            DataType::LargeList(_) => comparison_arrays_equal(
+                left.as_list::<i64>().value(index).as_ref(),
+                right.as_list::<i64>().value(index).as_ref(),
+            ),
+            DataType::FixedSizeList(_, _) => comparison_arrays_equal(
+                left.as_fixed_size_list().value(index).as_ref(),
+                right.as_fixed_size_list().value(index).as_ref(),
+            ),
+            DataType::ListView(_) => comparison_arrays_equal(
+                left.as_list_view::<i32>().value(index).as_ref(),
+                right.as_list_view::<i32>().value(index).as_ref(),
+            ),
+            DataType::LargeListView(_) => comparison_arrays_equal(
+                left.as_list_view::<i64>().value(index).as_ref(),
+                right.as_list_view::<i64>().value(index).as_ref(),
+            ),
+            DataType::Dictionary(_, _) => {
+                let value = |array: &dyn Array| {
+                    downcast_dictionary_array!(
+                        array => array.values().slice(array.key(index).unwrap(), 1),
+                        _ => unreachable!()
+                    )
+                };
+                comparison_arrays_equal(value(left).as_ref(), value(right).as_ref())
+            }
+            DataType::RunEndEncoded(_, _) => {
+                let value = |array: &dyn Array| {
+                    downcast_run_array!(
+                        array => array.values().slice(array.get_physical_index(index), 1),
+                        _ => unreachable!()
+                    )
+                };
+                comparison_arrays_equal(value(left).as_ref(), value(right).as_ref())
+            }
+            DataType::Union(_, _) => {
+                let left = left.as_union();
+                let right = right.as_union();
+                left.type_id(index) == right.type_id(index)
+                    && comparison_arrays_equal(
+                        left.value(index).as_ref(),
+                        right.value(index).as_ref(),
+                    )
+            }
+            _ => false,
+        }
+    })
+}
+
 pub fn compare_record_batches(
     batch: &RecordBatch,
 ) -> arrow::error::Result<CompareRecordBatchResult> {
@@ -1799,10 +1911,67 @@ pub fn compare_record_batches(
         }
     }
 
-    // Prepare new columns - include all data columns in output
+    let actual_row_count = actual_rows.len();
+    let expected_row_count = expected_rows.len();
+    let data_columns: Vec<_> = batch
+        .columns()
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != label_col_index)
+        .map(|(_, column)| column.clone())
+        .collect();
+    let sort_fields = data_columns
+        .iter()
+        .map(|column| SortField::new(column.data_type().clone()))
+        .collect::<Vec<_>>();
+
+    // Warehouse ordering may omit nested columns or leave ties. Match complete
+    // typed rows, consuming one expected occurrence per actual occurrence.
+    let rows = if !data_columns.is_empty() && RowConverter::supports_fields(&sort_fields) {
+        Some(RowConverter::new(sort_fields)?.convert_columns(&data_columns)?)
+    } else {
+        None
+    };
+    let mut expected_by_row = HashMap::new();
+    for &expected in &expected_rows {
+        expected_by_row
+            .entry(rows.as_ref().map(|rows| rows.row(expected)))
+            .or_insert_with(Vec::new)
+            .push(expected);
+    }
+    let mut matched_expected = vec![false; batch.num_rows()];
+    actual_rows.retain(|actual| {
+        let key = rows.as_ref().map(|rows| rows.row(*actual));
+        let matched = expected_by_row.get_mut(&key).and_then(|candidates| {
+            if rows.is_some() {
+                candidates.pop()
+            } else {
+                // Arrow's row format does not support every type (e.g. Map).
+                // Compare typed cells directly for those schemas and empty rows.
+                let position = candidates.iter().position(|expected| {
+                    data_columns.iter().all(|column| {
+                        comparison_arrays_equal(
+                            column.slice(*actual, 1).as_ref(),
+                            column.slice(*expected, 1).as_ref(),
+                        )
+                    })
+                });
+                position.map(|position| candidates.swap_remove(position))
+            }
+        });
+        if let Some(expected) = matched {
+            matched_expected[expected] = true;
+            false
+        } else {
+            true
+        }
+    });
+    expected_rows.retain(|expected| !matched_expected[*expected]);
+
+    // Only unmatched rows contribute to the difference report.
     let mut new_columns: Vec<ArrayRef> = vec![];
     let mut new_fields: Vec<Field> = vec![];
-    let mut has_differences = actual_rows.len() != expected_rows.len();
+    let has_differences = !actual_rows.is_empty() || !expected_rows.is_empty();
 
     for (col_index, field) in schema.fields().iter().enumerate() {
         if col_index == label_col_index {
@@ -1820,21 +1989,19 @@ pub fn compare_record_batches(
                     let actual_val = value_as_string(col, *a, data_type);
                     let expected_val = value_as_string(col, *e, data_type);
 
-                    if actual_val == expected_val {
+                    if comparison_arrays_equal(col.slice(*a, 1).as_ref(), col.slice(*e, 1).as_ref())
+                    {
                         expected_val
                     } else {
-                        has_differences = true;
                         format!("{expected_val} -> {actual_val}")
                     }
                 }
                 EitherOrBoth::Left(a) => {
                     let actual_val = value_as_string(col, *a, data_type);
-                    has_differences = true;
                     format!("∅ -> {actual_val}")
                 }
                 EitherOrBoth::Right(e) => {
                     let expected_val = value_as_string(col, *e, data_type);
-                    has_differences = true;
                     format!("{expected_val} -> ∅")
                 }
             })
@@ -1862,12 +2029,14 @@ pub fn compare_record_batches(
         RecordBatch::try_new(summary_schema, vec![summary_data])?
     } else {
         let new_schema = Arc::new(Schema::new(new_fields));
-        RecordBatch::try_new(new_schema, new_columns)?
+        let options = RecordBatchOptions::new()
+            .with_row_count(Some(actual_rows.len().max(expected_rows.len())));
+        RecordBatch::try_new_with_options(new_schema, new_columns, &options)?
     };
 
     Ok(CompareRecordBatchResult {
-        actual_rows: actual_rows.len(),
-        expected_rows: expected_rows.len(),
+        actual_rows: actual_row_count,
+        expected_rows: expected_row_count,
         diff_batch,
         has_differences,
     })
@@ -1946,9 +2115,490 @@ fn value_as_string(array: &ArrayRef, index: usize, data_type: &DataType) -> Stri
 #[cfg(test)]
 mod compare_record_batches_tests {
     use super::compare_record_batches;
-    use arrow::array::{BinaryArray, Int32Array, Int64Array, StringViewArray};
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::array::{
+        Array, ArrayRef, BinaryArray, DictionaryArray, FixedSizeListArray, Float64Array,
+        Int32Array, Int32Builder, Int64Array, LargeListArray, LargeListViewArray, ListArray,
+        ListBuilder, ListViewArray, MapBuilder, RecordBatch, RunArray, StringArray, StringBuilder,
+        StringViewArray, StructArray, UnionArray,
+    };
+    use arrow::buffer::{NullBuffer, OffsetBuffer};
+    use arrow::datatypes::{DataType, Field, Int32Type, Schema, UnionFields};
     use std::sync::Arc;
+
+    fn comparison_batch(labels: Vec<&str>, columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
+        let mut fields = vec![Field::new("actual_or_expected", DataType::Utf8, false)];
+        let mut arrays = vec![Arc::new(StringArray::from(labels)) as ArrayRef];
+        for (name, array) in columns {
+            fields.push(Field::new(name, array.data_type().clone(), true));
+            arrays.push(array);
+        }
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).unwrap()
+    }
+
+    #[test]
+    fn matches_reversed_and_shuffled_rows() {
+        for actual in [vec![3, 2, 1], vec![2, 3, 1]] {
+            let batch = comparison_batch(
+                vec![
+                    "expected", "expected", "expected", "actual", "actual", "actual",
+                ],
+                vec![(
+                    "id",
+                    Arc::new(Int32Array::from([vec![1, 2, 3], actual].concat())),
+                )],
+            );
+
+            let result = compare_record_batches(&batch).unwrap();
+            assert!(!result.has_differences);
+            assert_eq!(result.actual_rows, 3);
+            assert_eq!(result.expected_rows, 3);
+        }
+    }
+
+    #[test]
+    fn matches_interleaved_rows_with_tied_sortable_values() {
+        let records = StructArray::from(vec![(
+            Arc::new(Field::new("value", DataType::Int32, false)),
+            Arc::new(Int32Array::from(vec![1, 2, 2, 1])) as ArrayRef,
+        )]);
+        let batch = comparison_batch(
+            vec!["actual", "expected", "actual", "expected"],
+            vec![
+                ("sort_key", Arc::new(Int32Array::from(vec![7, 7, 7, 7]))),
+                ("record_value", Arc::new(records)),
+            ],
+        );
+
+        assert!(!compare_record_batches(&batch).unwrap().has_differences);
+    }
+
+    #[test]
+    fn preserves_duplicate_counts() {
+        for (actual, has_differences) in [(vec![2, 1, 1], false), (vec![1, 2, 2], true)] {
+            let batch = comparison_batch(
+                vec![
+                    "expected", "expected", "expected", "actual", "actual", "actual",
+                ],
+                vec![(
+                    "id",
+                    Arc::new(Int32Array::from([vec![1, 1, 2], actual].concat())),
+                )],
+            );
+
+            assert_eq!(
+                compare_record_batches(&batch).unwrap().has_differences,
+                has_differences
+            );
+        }
+    }
+
+    #[test]
+    fn matches_null_rows_in_different_orders() {
+        let batch = comparison_batch(
+            vec![
+                "expected", "expected", "expected", "actual", "actual", "actual",
+            ],
+            vec![(
+                "value",
+                Arc::new(StringArray::from(vec![
+                    None,
+                    Some("NULL"),
+                    Some(""),
+                    Some(""),
+                    None,
+                    Some("NULL"),
+                ])),
+            )],
+        );
+
+        assert!(!compare_record_batches(&batch).unwrap().has_differences);
+    }
+
+    #[test]
+    fn distinguishes_null_from_literal_null_string() {
+        let batch = comparison_batch(
+            vec!["expected", "actual"],
+            vec![(
+                "value",
+                Arc::new(StringArray::from(vec![None, Some("NULL")])),
+            )],
+        );
+
+        assert!(compare_record_batches(&batch).unwrap().has_differences);
+    }
+
+    #[test]
+    fn distinguishes_floats_with_identical_display_values() {
+        let batch = comparison_batch(
+            vec!["expected", "actual"],
+            vec![("value", Arc::new(Float64Array::from(vec![1.01, 1.02])))],
+        );
+
+        assert!(compare_record_batches(&batch).unwrap().has_differences);
+    }
+
+    #[test]
+    fn preserves_column_boundaries_when_matching_rows() {
+        for (first, second) in [
+            (vec!["ab", "a"], vec!["c", "bc"]),
+            (vec!["a,b", "a"], vec!["c", "b,c"]),
+            (vec!["a\0b", "a"], vec!["c", "b\0c"]),
+        ] {
+            let batch = comparison_batch(
+                vec!["expected", "actual"],
+                vec![
+                    ("first", Arc::new(StringArray::from(first))),
+                    ("second", Arc::new(StringArray::from(second))),
+                ],
+            );
+
+            assert!(compare_record_batches(&batch).unwrap().has_differences);
+        }
+    }
+
+    #[test]
+    fn detects_differences_after_matching_reordered_rows() {
+        let batch = comparison_batch(
+            vec![
+                "expected", "expected", "expected", "actual", "actual", "actual",
+            ],
+            vec![("id", Arc::new(Int32Array::from(vec![1, 2, 3, 3, 1, 4])))],
+        );
+
+        let result = compare_record_batches(&batch).unwrap();
+        assert!(result.has_differences);
+        let differences = result
+            .diff_batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(differences.iter().any(|value| value == Some("2 -> 4")));
+        assert!(!differences.iter().any(|value| value == Some("1 -> 3")));
+    }
+
+    #[test]
+    fn detects_missing_and_extra_rows() {
+        for (labels, values, actual_rows, expected_rows, difference) in [
+            (
+                vec!["expected", "expected", "actual"],
+                vec![1, 2, 2],
+                1,
+                2,
+                "1 -> ∅",
+            ),
+            (
+                vec!["expected", "actual", "actual"],
+                vec![2, 1, 2],
+                2,
+                1,
+                "∅ -> 1",
+            ),
+            (vec!["expected"], vec![1], 0, 1, "1 -> ∅"),
+            (vec!["actual"], vec![1], 1, 0, "∅ -> 1"),
+        ] {
+            let batch = comparison_batch(labels, vec![("id", Arc::new(Int32Array::from(values)))]);
+            let result = compare_record_batches(&batch).unwrap();
+            assert!(result.has_differences);
+            assert_eq!(result.actual_rows, actual_rows);
+            assert_eq!(result.expected_rows, expected_rows);
+            let differences = result
+                .diff_batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            assert!(differences.iter().any(|value| value == Some(difference)));
+        }
+    }
+
+    #[test]
+    fn compares_struct_rows_by_contents() {
+        for (actual, has_differences) in [(vec![2, 1], false), (vec![2, 3], true)] {
+            let records = StructArray::from(vec![(
+                Arc::new(Field::new("value", DataType::Int32, false)),
+                Arc::new(Int32Array::from([vec![1, 2], actual].concat())) as ArrayRef,
+            )]);
+            let batch = comparison_batch(
+                vec!["expected", "expected", "actual", "actual"],
+                vec![("record_value", Arc::new(records))],
+            );
+
+            assert_eq!(
+                compare_record_batches(&batch).unwrap().has_differences,
+                has_differences
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_child_values_hidden_by_null_structs() {
+        let records = StructArray::new(
+            vec![Arc::new(Field::new("value", DataType::Int32, false))].into(),
+            vec![Arc::new(Int32Array::from(vec![1, 99, 88, 1]))],
+            Some(NullBuffer::from(vec![true, false, false, true])),
+        );
+        let batch = comparison_batch(
+            vec!["expected", "expected", "actual", "actual"],
+            vec![("record_value", Arc::new(records))],
+        );
+
+        assert!(!compare_record_batches(&batch).unwrap().has_differences);
+    }
+
+    #[test]
+    fn compares_map_rows_with_duplicate_counts() {
+        for (actual, has_differences) in [
+            (vec![2, 1, 1], false),
+            (vec![2, 2, 1], true),
+            (vec![2, 3, 1], true),
+        ] {
+            let mut maps = MapBuilder::new(None, StringBuilder::new(), Int32Builder::new());
+            for value in [vec![1, 1, 2], actual].concat() {
+                maps.keys().append_value("key");
+                maps.values().append_value(value);
+                maps.append(true).unwrap();
+            }
+            let batch = comparison_batch(
+                vec![
+                    "expected", "expected", "expected", "actual", "actual", "actual",
+                ],
+                vec![("map_value", Arc::new(maps.finish()))],
+            );
+
+            assert_eq!(
+                compare_record_batches(&batch).unwrap().has_differences,
+                has_differences
+            );
+        }
+    }
+
+    #[test]
+    fn matches_map_entries_in_any_order_without_losing_duplicate_rows() {
+        for (actual, has_differences) in [
+            (vec![2, 1, 1], false),
+            (vec![2, 2, 1], true),
+            (vec![2, 3, 1], true),
+        ] {
+            let mut maps = MapBuilder::new(None, StringBuilder::new(), Int32Builder::new());
+            for (row, value) in [vec![1, 1, 2], actual].concat().into_iter().enumerate() {
+                let entries = if row < 3 {
+                    [("a", Some(value)), ("b", None)]
+                } else {
+                    [("b", None), ("a", Some(value))]
+                };
+                for (key, value) in entries {
+                    maps.keys().append_value(key);
+                    maps.values().append_option(value);
+                }
+                maps.append(true).unwrap();
+            }
+            let batch = comparison_batch(
+                vec![
+                    "expected", "expected", "expected", "actual", "actual", "actual",
+                ],
+                vec![("map_value", Arc::new(maps.finish()))],
+            );
+            assert_eq!(
+                compare_record_batches(&batch).unwrap().has_differences,
+                has_differences
+            );
+        }
+    }
+
+    #[test]
+    fn matches_nested_maps_but_preserves_list_order() {
+        for (actual_list, has_differences) in [(vec![1, 2], false), (vec![2, 1], true)] {
+            let mut maps = MapBuilder::new(
+                None,
+                StringBuilder::new(),
+                ListBuilder::new(Int32Builder::new()),
+            );
+            for (keys, values) in [(["a", "b"], vec![1, 2]), (["b", "a"], actual_list)] {
+                for key in keys {
+                    maps.keys().append_value(key);
+                    maps.values().values().append_slice(&values);
+                    maps.values().append(true);
+                }
+                maps.append(true).unwrap();
+            }
+            let maps = maps.finish();
+            let nested = StructArray::from(vec![(
+                Arc::new(Field::new("map", maps.data_type().clone(), true)),
+                Arc::new(maps) as ArrayRef,
+            )]);
+            let batch = comparison_batch(
+                vec!["expected", "actual"],
+                vec![("nested", Arc::new(nested))],
+            );
+            assert_eq!(
+                compare_record_batches(&batch).unwrap().has_differences,
+                has_differences
+            );
+        }
+    }
+
+    #[test]
+    fn compares_maps_inside_nested_and_encoded_arrays() {
+        for (actual_value, has_differences) in [(2, false), (3, true)] {
+            let mut maps = MapBuilder::new(None, StringBuilder::new(), Int32Builder::new());
+            for entries in [[("a", 1), ("b", 2)], [("b", actual_value), ("a", 1)]] {
+                for (key, value) in entries {
+                    maps.keys().append_value(key);
+                    maps.values().append_value(value);
+                }
+                maps.append(true).unwrap();
+            }
+            let maps = Arc::new(maps.finish()) as ArrayRef;
+            let field = Arc::new(Field::new("item", maps.data_type().clone(), true));
+            let arrays: Vec<ArrayRef> = vec![
+                Arc::new(ListArray::new(
+                    field.clone(),
+                    OffsetBuffer::from_lengths([1, 1]),
+                    maps.clone(),
+                    None,
+                )),
+                Arc::new(LargeListArray::new(
+                    field.clone(),
+                    OffsetBuffer::from_lengths([1, 1]),
+                    maps.clone(),
+                    None,
+                )),
+                Arc::new(FixedSizeListArray::new(
+                    field.clone(),
+                    1,
+                    maps.clone(),
+                    None,
+                )),
+                Arc::new(ListViewArray::new(
+                    field.clone(),
+                    vec![0, 1].into(),
+                    vec![1, 1].into(),
+                    maps.clone(),
+                    None,
+                )),
+                Arc::new(LargeListViewArray::new(
+                    field.clone(),
+                    vec![0, 1].into(),
+                    vec![1, 1].into(),
+                    maps.clone(),
+                    None,
+                )),
+                Arc::new(DictionaryArray::<Int32Type>::new(
+                    Int32Array::from(vec![0, 1]),
+                    maps.clone(),
+                )),
+                Arc::new(
+                    RunArray::<Int32Type>::try_new(&Int32Array::from(vec![1, 2]), maps.as_ref())
+                        .unwrap(),
+                ),
+                Arc::new(
+                    UnionArray::try_new(
+                        UnionFields::new(vec![0], vec![field]),
+                        vec![0, 0].into(),
+                        Some(vec![0, 1].into()),
+                        vec![maps],
+                    )
+                    .unwrap(),
+                ),
+            ];
+            for array in arrays {
+                let data_type = array.data_type().clone();
+                let batch = comparison_batch(vec!["expected", "actual"], vec![("nested", array)]);
+                assert_eq!(
+                    compare_record_batches(&batch).unwrap().has_differences,
+                    has_differences,
+                    "{data_type}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compares_encoded_scalars_with_and_without_maps() {
+        let mut cases: Vec<(ArrayRef, bool)> = vec![];
+        for value in [None, Some(7)] {
+            cases.push((
+                Arc::new(DictionaryArray::<Int32Type>::new(
+                    Int32Array::from(vec![None, Some(0)]),
+                    Arc::new(Int32Array::from(vec![value])),
+                )),
+                value.is_some(),
+            ));
+        }
+        for actual in [1, 2] {
+            cases.push((
+                Arc::new(
+                    RunArray::<Int32Type>::try_new(
+                        &Int32Array::from(vec![1, 2]),
+                        &Int32Array::from(vec![1, actual]),
+                    )
+                    .unwrap(),
+                ),
+                actual != 1,
+            ));
+        }
+
+        let mut maps = MapBuilder::new(None, StringBuilder::new(), Int32Builder::new());
+        maps.append(true).unwrap();
+        maps.append(true).unwrap();
+        let maps = Arc::new(maps.finish()) as ArrayRef;
+        for (array, has_differences) in cases {
+            for with_map in [false, true] {
+                let mut columns = vec![("encoded", array.clone())];
+                if with_map {
+                    columns.push(("map", maps.clone()));
+                }
+                let batch = comparison_batch(vec!["expected", "actual"], columns);
+                assert_eq!(
+                    compare_record_batches(&batch).unwrap().has_differences,
+                    has_differences,
+                    "{}, with_map={with_map}",
+                    array.data_type()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ignores_row_order_but_preserves_array_element_order() {
+        for (actual, has_differences) in [
+            (vec![vec![3], vec![1, 2]], false),
+            (vec![vec![3], vec![2, 1]], true),
+        ] {
+            let values = [vec![vec![1, 2], vec![3]], actual].concat();
+            let arrays = ListArray::from_iter_primitive::<Int32Type, _, _>(
+                values
+                    .into_iter()
+                    .map(|values| Some(values.into_iter().map(Some))),
+            );
+            let batch = comparison_batch(
+                vec!["expected", "expected", "actual", "actual"],
+                vec![("array_value", Arc::new(arrays))],
+            );
+
+            assert_eq!(
+                compare_record_batches(&batch).unwrap().has_differences,
+                has_differences
+            );
+        }
+    }
+
+    #[test]
+    fn compares_label_only_row_counts() {
+        for (labels, actual_rows, expected_rows) in [
+            (vec!["expected", "actual", "actual", "expected"], 2, 2),
+            (vec!["actual", "expected", "actual"], 2, 1),
+            (vec!["expected"], 0, 1),
+        ] {
+            let batch = comparison_batch(labels, vec![]);
+            let result = compare_record_batches(&batch).unwrap();
+
+            assert_eq!(result.actual_rows, actual_rows);
+            assert_eq!(result.expected_rows, expected_rows);
+            assert_eq!(result.has_differences, actual_rows != expected_rows);
+        }
+    }
 
     // Query results are normalized to Utf8View/LargeUtf8 at the adapter boundary
     // (dbt-adapter's concat_batches::to_view_types), so AgateTable's batches carry
@@ -1961,7 +2611,7 @@ mod compare_record_batches_tests {
             Field::new("id", DataType::Int32, false),
             Field::new("name", DataType::Utf8View, false),
         ]));
-        let batch = arrow::array::RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             schema,
             vec![
                 Arc::new(StringViewArray::from(vec!["expected", "actual"])),
@@ -1984,7 +2634,7 @@ mod compare_record_batches_tests {
             Field::new("actual_or_expected", DataType::Utf8View, false),
             Field::new("name", DataType::Utf8View, false),
         ]));
-        let batch = arrow::array::RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             schema,
             vec![
                 Arc::new(StringViewArray::from(vec!["expected", "actual"])),
@@ -2003,7 +2653,7 @@ mod compare_record_batches_tests {
             Field::new("actual_or_expected", DataType::Int64, false),
             Field::new("id", DataType::Int64, false),
         ]));
-        let batch = arrow::array::RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             schema,
             vec![
                 Arc::new(Int64Array::from(Vec::<i64>::new())),
@@ -2025,7 +2675,7 @@ mod compare_record_batches_tests {
             Field::new("actual_or_expected", DataType::Int64, false),
             Field::new("id", DataType::Int64, false),
         ]));
-        let batch = arrow::array::RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             schema,
             vec![
                 Arc::new(Int64Array::from(vec![1])),
@@ -2047,7 +2697,7 @@ mod compare_record_batches_tests {
             Field::new("actual_or_expected", DataType::Binary, false),
             Field::new("id", DataType::Int32, false),
         ]));
-        let batch = arrow::array::RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             schema,
             vec![
                 Arc::new(BinaryArray::from(vec![
