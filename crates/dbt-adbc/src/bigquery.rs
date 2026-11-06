@@ -5,6 +5,8 @@ pub const API_ENDPOINT: &str = "adbc.bigquery.sql.api_endpoint";
 // Storage Read API (gRPC) endpoint as `host:port`. Only the Foundry driver
 // reads this key; the canonical driver ignores it.
 pub const STORAGE_READ_API_ENDPOINT: &str = "bigquery.storage_endpoint";
+pub const QUERY_USE_STORAGE_API_DISABLED_CLIENT: &str =
+    "adbc.bigquery.sql.query.use_storage_api_disabled_client";
 pub const LOCATION: &str = "adbc.bigquery.sql.location";
 pub const PROJECT_ID: &str = "adbc.bigquery.sql.project_id";
 pub const DATASET_ID: &str = "adbc.bigquery.sql.dataset_id";

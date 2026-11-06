@@ -290,28 +290,34 @@ pub(crate) fn adbc_execute_with_options(
         (_, AdapterType::ClickHouse) => {
             options.extend(crate::metadata::clickhouse::statement_options(engine))
         }
-        (Some(state), AdapterType::Bigquery) => {
-            let mut job_labels =
-                maybe_query_comment
-                    .as_ref()
-                    .map_or_else(IndexMap::new, |comment| {
-                        engine
-                            .query_comment()
-                            .get_job_labels_from_query_comment(comment)
-                    });
-            if let Some(invocation_id_label) = state
-                .lookup("invocation_id", &[])
-                .and_then(|value| value.as_str().map(|label| label.to_owned()))
-            {
-                job_labels.insert("dbt_invocation_id".to_string(), invocation_id_label);
-            }
+        (_, AdapterType::Bigquery) => {
+            dbt_adapter_engine::bigquery::apply_statement_options(
+                engine.get_config(),
+                &mut options,
+            );
+            if let Some(state) = state {
+                let mut job_labels =
+                    maybe_query_comment
+                        .as_ref()
+                        .map_or_else(IndexMap::new, |comment| {
+                            engine
+                                .query_comment()
+                                .get_job_labels_from_query_comment(comment)
+                        });
+                if let Some(invocation_id_label) = state
+                    .lookup("invocation_id", &[])
+                    .and_then(|value| value.as_str().map(|label| label.to_owned()))
+                {
+                    job_labels.insert("dbt_invocation_id".to_string(), invocation_id_label);
+                }
 
-            let job_label_option =
-                serde_json::to_string(&job_labels).expect("Should be able to serialize job labels");
-            options.push((
-                QUERY_LABELS.to_owned(),
-                OptionValue::String(job_label_option),
-            ));
+                let job_label_option = serde_json::to_string(&job_labels)
+                    .expect("Should be able to serialize job labels");
+                options.push((
+                    QUERY_LABELS.to_owned(),
+                    OptionValue::String(job_label_option),
+                ));
+            }
         }
         _ => {}
     }

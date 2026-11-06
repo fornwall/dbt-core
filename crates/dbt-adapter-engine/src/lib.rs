@@ -7,6 +7,7 @@ use adbc_core::options::OptionValue;
 
 pub mod behavior;
 
+pub mod bigquery;
 pub mod clickhouse;
 pub mod databricks;
 pub mod duckdb;

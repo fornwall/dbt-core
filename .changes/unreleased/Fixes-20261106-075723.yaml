@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fetch BigQuery query results over REST when api_endpoint is configured without storage_read_api_endpoint, matching dbt Core 1.x.
+time: 2026-11-06T07:57:23.660727515+01:00
+custom:
+    author: fornwall
+    issue: "14617"
+    project: dbt-core
