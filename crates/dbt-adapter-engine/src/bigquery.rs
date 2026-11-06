@@ -6,10 +6,6 @@ use crate::Options;
 
 /// Default custom REST endpoints to row-based result fetching, as in dbt Core 1.x.
 pub fn apply_statement_options(config: &AdapterConfig, options: &mut Options) {
-    // Core 1.x consumes QueryJob.result() through the REST row iterator:
-    // https://github.com/dbt-labs/dbt-adapters/blob/911748dc6c2990c10531caa67d6aafe406c96329/dbt-bigquery/src/dbt/adapters/bigquery/connections.py#L690-L694
-    // The driver accepts this option on statements, not databases or connections:
-    // https://github.com/dbt-labs/arrow-adbc/blob/ee87a6f93f2e710a947de6d065a2008357d74dc1/go/adbc/driver/bigquery/statement.go#L491-L498
     if config.get_str("api_endpoint").is_some()
         && config.get_str("storage_read_api_endpoint").is_none()
         && !options
